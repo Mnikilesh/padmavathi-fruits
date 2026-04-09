@@ -1,0 +1,30 @@
+# ── Dependencies ──────────────────────────────────────────────
+node_modules/
+
+# ── Secrets — NEVER commit these ──────────────────────────────
+.env
+.env.local
+.env.production
+.env.development
+
+# ── Netlify local cache ────────────────────────────────────────
+.netlify/
+
+# ── OS / Editor ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ── Logs ───────────────────────────────────────────────────────
+*.log
+npm-debug.log*
+
+# ── Old Express artifacts (no longer needed) ───────────────────
+uploads/
+push-subscriptions.json
+.env-vapid
+server.js
+run.bat
+install.bat
+START_HERE.bat

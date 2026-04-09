@@ -1,0 +1,59 @@
+[build]
+  publish   = "public"
+  functions = "netlify/functions"
+  command   = "echo 'No build step needed'"
+
+[dev]
+  port       = 8080
+  publish    = "public"
+  autoLaunch = false
+
+[functions]
+  node_bundler     = "esbuild"
+  included_files   = ["netlify/functions/**"]
+
+[context.production.environment]
+  NODE_ENV = "production"
+
+[context.deploy-preview.environment]
+  NODE_ENV = "development"
+
+[[redirects]]
+  from    = "/api/*"
+  to      = "/.netlify/functions/api/:splat"
+  status  = 200
+  force   = true
+
+[[redirects]]
+  from   = "/health"
+  to     = "/.netlify/functions/api/health"
+  status = 200
+
+[[redirects]]
+  from   = "/*"
+  to     = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options        = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy        = "strict-origin-when-cross-origin"
+
+[[headers]]
+  for = "/api/*"
+  [headers.values]
+    Access-Control-Allow-Origin  = "*"
+    Access-Control-Allow-Headers = "Content-Type, Authorization"
+    Access-Control-Allow-Methods = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/manifest.json"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"

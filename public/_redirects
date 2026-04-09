@@ -1,0 +1,6 @@
+# Netlify _redirects — processed BEFORE netlify.toml
+# force=true ensures Authorization header is NOT stripped on DELETE/PATCH/PUT
+
+/api/*  /.netlify/functions/api/:splat  200!
+/health /.netlify/functions/api/health  200!
+/*      /index.html                     200
