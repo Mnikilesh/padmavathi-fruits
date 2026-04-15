@@ -1082,7 +1082,7 @@ body {
   #page-checkout .co-summary-card .btn-place { display: none; }
 }
 body:not(.on-checkout) #coStickyBottom { display: none !important; }
-body.on-checkout #coStickyBottom { display: none !important; }
+/* body.on-checkout: sticky bar is SHOWN on mobile checkout (see @media below) */
 @media (min-width: 821px) {
   .co-sticky-bottom { display: none !important; }
 }
@@ -3842,7 +3842,17 @@ body.on-admin   #floatingCartBar { display: none !important; }
   </div>
 </div>
 
-<!-- Mobile sticky checkout CTA removed per design update -->
+<!-- Mobile sticky checkout bottom bar — visible only on mobile when on checkout -->
+<div id="coStickyBottom" class="co-sticky-bottom" style="display:none">
+  <div class="co-sticky-total">
+    <span class="co-sticky-total-label">TOTAL</span>
+    <span class="co-sticky-total-amt" id="coStickyAmt">₹0</span>
+  </div>
+  <button class="co-sticky-btn" onclick="placeOrder()">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>
+    Place Order
+  </button>
+</div>
 
 <!-- SUCCESS -->
 <div class="page" id="page-success">
@@ -7498,10 +7508,9 @@ function renderOrderSummary() {
   }
   document.getElementById('orderSummary').innerHTML = html;
 
-  // Update mobile sticky bottom bar
-  // Sticky bottom bar removed
-  const stickyBar = null;
-  const stickyAmt = null;
+  // Update mobile sticky bottom bar (mobile only — desktop hides via CSS)
+  const stickyBar = document.getElementById('coStickyBottom');
+  const stickyAmt = document.getElementById('coStickyAmt');
   if (stickyBar && stickyAmt) {
     stickyAmt.textContent = '₹' + total.toFixed(0);
     // Show only when on checkout page

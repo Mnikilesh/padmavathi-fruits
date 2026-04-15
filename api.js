@@ -4,6 +4,7 @@
  ║   v4 — GPS · Real-Time Polling · Atomic Accept · Driver UI   ║
  ╚══════════════════════════════════════════════════════════════╝
 */
+require('dotenv').config();
 'use strict';
 
 const mongoose      = require('mongoose');

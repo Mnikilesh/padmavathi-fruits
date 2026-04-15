@@ -155,3 +155,6 @@ The app uses **smart polling** instead:
 - **Admin dashboard**: manual refresh + pull-to-refresh
 
 For production scale (100+ drivers), upgrade to: **Ably**, **Pusher**, or **Socket.IO on a persistent server** — the polling architecture is designed to be drop-in replaceable.
+
+
+updation netlify cmd: npx netlify deploy --prod
