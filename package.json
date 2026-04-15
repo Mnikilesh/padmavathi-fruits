@@ -1,15 +1,14 @@
 {
-  "name": "padmavathi-fruits",
-  "version": "2.0.0",
-  "description": "Padmavathi Fruits Company — Warangal | Netlify + MongoDB Atlas",
+  "name": "pfc-backend",
+  "version": "1.0.0",
+  "description": "Padmavathi Fruits Backend",
+  "main": "api.js",
   "engines": {
     "node": ">=18.0.0"
   },
   "scripts": {
-    "dev": "netlify dev",
-    "build": "echo 'No build step — static frontend'",
-    "seed": "node scripts/seed.js",
-    "lint": "echo 'No linter configured'"
+    "start": "node api.js",
+    "seed": "node scripts/seed.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -19,8 +18,5 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
     "web-push": "^3.6.7"
-  },
-  "devDependencies": {
-    "netlify-cli": "^17.0.0"
   }
 }

@@ -49,7 +49,7 @@ async function connectDB() {
 const userSchema = new mongoose.Schema({
   name:     { type: String, required: true, trim: true },
   email:    { type: String, required: true, unique: true, lowercase: true, trim: true },
-  phone:    { type: String, required: true },
+  phone:    { type: String, required: true, unique: true, trim: true },
   password: { type: String, required: true, minlength: 8, select: false },
   role:     { type: String, enum: ['user','admin','driver'], default: 'user' },
   language: { type: String, default: 'en' },
@@ -126,8 +126,9 @@ const orderItemSchema = new mongoose.Schema({
 }, { _id:false });
 
 const orderSchema = new mongoose.Schema({
-  orderId:  { type:String, unique:true, default:()=>'PFC-'+Math.floor(10000+Math.random()*90000) },
-  user:     { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true },
+  orderId:     { type:String, unique:true, default:()=>'PFC-'+Math.floor(10000+Math.random()*90000) },
+  orderToken:  { type:String, unique:true, required:true }, // idempotency key — REQUIRED, prevents duplicate orders
+  user:        { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true },
   customerName:String, customerPhone:String, customerEmail:String,
   items:    { type:[orderItemSchema], validate:v=>v.length>0 },
   deliveryAddress: {
@@ -198,6 +199,32 @@ const pushSubSchema = new mongoose.Schema({
   userId:       String,
   ts:           { type:Number, default:Date.now },
 }, { timestamps:true });
+
+// ─── RATE LIMITER (Task 10) ──────────────────────────────────
+// Per-IP: max 100 requests per 15 minutes — in-memory, free-tier safe
+const _rlMap = new Map();
+const RL_WINDOW = 15 * 60 * 1000; // 15 min
+const RL_MAX    = 100;
+
+function rateLimit(ip) {
+  const now = Date.now();
+  if (!_rlMap.has(ip)) _rlMap.set(ip, []);
+  const reqs = _rlMap.get(ip).filter(t => now - t < RL_WINDOW);
+  if (reqs.length >= RL_MAX) return false;
+  reqs.push(now);
+  _rlMap.set(ip, reqs);
+  // Prune map to avoid unbounded growth — remove stale IPs every 500 entries
+  if (_rlMap.size > 500) {
+    for (const [k, v] of _rlMap) {
+      if (!v.some(t => now - t < RL_WINDOW)) _rlMap.delete(k);
+    }
+  }
+  return true;
+}
+
+function getIP(event) {
+  return (event.headers['x-forwarded-for'] || event.headers['x-real-ip'] || '').split(',')[0].trim() || 'unknown';
+}
 
 function getModels() {
   return {
@@ -452,6 +479,13 @@ async function route(method, path, event) {
   try { if (event.body) body=sanitize(JSON.parse(event.body)); } catch(_) {}
   const q = event.queryStringParameters || {};
 
+  // ── RATE LIMIT: applies to every API route (Task 10) ──────────
+  const clientIP = getIP(event);
+  if (!rateLimit(clientIP)) {
+    console.warn(`[PFC] Rate limit exceeded ip:${clientIP} path:${path}`);
+    return R.json({ success:false, message:'Too many requests. Please wait 15 minutes.' }, 429);
+  }
+
   if (method==='GET' && path==='/health') return R.ok({ uptime:process.uptime().toFixed(0)+'s' });
 
   // ── AUTH ────────────────────────────────────────────────────
@@ -462,7 +496,10 @@ async function route(method, path, event) {
     if (!/^\S+@\S+\.\S+$/.test(email))    return R.bad('Invalid email.');
     if (!/^[6-9]\d{9}$/.test(phone))      return R.bad('Valid 10-digit mobile required.');
     if (password.length<8)                return R.bad('Password min 8 chars.');
-    if (await User.findOne({email:email.toLowerCase()})) return R.bad('Email already registered.');
+    const existingEmail = await User.findOne({email:email.toLowerCase()});
+    if (existingEmail) return R.bad('An account with this email already exists.');
+    const existingPhone = await User.findOne({phone});
+    if (existingPhone) return R.bad('An account with this mobile number already exists.');
     const u=await User.create({name,email,phone,password,language});
     const {accessToken,refreshToken}=tokenPair(u);
     u.refreshTokens.push({token:crypto.createHash('sha256').update(refreshToken).digest('hex'),expiresAt:new Date(Date.now()+30*864e5)});
@@ -865,15 +902,33 @@ async function route(method, path, event) {
   if (method==='POST' && path==='/api/orders') {
     const auth=await authenticate(event.headers);
     if (auth.err) return auth.err;
-    const {items,customerName,customerPhone,deliveryAddress,orderNotes,paymentMethod}=body;
+    const {items,customerName,customerPhone,deliveryAddress,orderNotes,paymentMethod,orderToken}=body;
+    if (!orderToken)                                          return R.bad('orderToken required (idempotency key missing).');
     if (!items?.length)                              return R.bad('Items required.');
     if (!customerName||!customerPhone)               return R.bad('Name and phone required.');
     if (!deliveryAddress?.street||!deliveryAddress?.pincode) return R.bad('Address required.');
     if (!['cod','upi','razorpay'].includes(paymentMethod))   return R.bad('Invalid payment method.');
 
-    // GPS coordinates — required for delivery navigation
+    // ── IDEMPOTENCY CHECK 1: orderToken (primary — UUID from frontend, REQUIRED) ──
+    const existing = await Order.findOne({ orderToken });
+    if (existing) {
+      console.log(`[PFC] DUPLICATE_ORDER_PREVENTED orderToken:${orderToken} userId:${auth.user._id} ip:${clientIP}`);
+      return R.ok({ order: existing }, 'Order already placed (duplicate prevented).');
+    }
+
+    // ── GPS coordinates — required for delivery navigation
     const hasGPS = deliveryAddress.lat && deliveryAddress.lng &&
                    Math.abs(+deliveryAddress.lat) <= 90 && Math.abs(+deliveryAddress.lng) <= 180;
+
+    // ── STRICT VALIDATION (Task 13) ───────────────────────────
+    // 1. Verify user still exists and is active
+    const userCheck = await User.findById(auth.user._id).select('_id isActive');
+    if (!userCheck || !userCheck.isActive) return R.bad('User account not found or inactive.');
+    // 2. Cart must not be empty (belt-and-suspenders after items?.length check)
+    if (!Array.isArray(items) || items.length === 0) return R.bad('Cart is empty.');
+    // 3. Validate totalAmount from client is a positive number (will be recomputed server-side but sanity check early)
+    if (body.totalAmount !== undefined && (isNaN(+body.totalAmount) || +body.totalAmount <= 0))
+      return R.bad('Invalid totalAmount.');
 
     const resolved=[]; let subtotal=0;
     for (const item of items) {
@@ -906,9 +961,21 @@ async function route(method, path, event) {
     const totalAmount=parseFloat((subtotal+deliveryFee).toFixed(2));
     const initialPaymentStatus=(paymentMethod==='upi'||paymentMethod==='razorpay')?'paid':'pending';
 
+    // ── IDEMPOTENCY CHECK 2: time-window fallback (catches token-less retries) ──
+    const recent = await Order.findOne({
+      user: auth.user._id,
+      totalAmount,
+      createdAt: { $gte: new Date(Date.now() - 10000) }
+    });
+    if (recent) {
+      console.log(`[PFC] RECENT_DUPLICATE_PREVENTED userId:${auth.user._id} amount:${totalAmount} ip:${clientIP}`);
+      return R.ok({ order: recent }, 'Recent duplicate order prevented.');
+    }
+
     const order=await Order.create({
       user:auth.user._id, customerName, customerPhone, customerEmail:auth.user.email,
       items:resolved,
+      orderToken: orderToken, // always required — frontend must supply UUID
       deliveryAddress:{
         street:deliveryAddress.street,
         city:deliveryAddress.city||'Warangal',
@@ -942,6 +1009,7 @@ async function route(method, path, event) {
       `${customerName} · Tap to accept`,
       { url:'/?page=driver', orderId:order.orderId }
     ).catch(()=>{});
+    console.log(`[PFC] ORDER_CREATED orderId:${order.orderId} orderToken:${orderToken} userId:${auth.user._id} ip:${clientIP} amount:${totalAmount}`);
     return R.created({order},'Order placed! 🎉');
   }
 
@@ -1480,6 +1548,8 @@ async function route(method, path, event) {
     if (password.length<8) return R.bad('Password min 8 chars.');
     const exists=await User.findOne({email:email.toLowerCase()});
     if (exists) return R.bad('Email already registered.');
+    const existsPhone=await User.findOne({phone});
+    if (existsPhone) return R.bad('An account with this mobile number already exists.');
     const driver=await User.create({name,email,phone,password,role:'driver',vehicleType:vehicleType||'bike'});
     return R.created({driver:{_id:driver._id,name:driver.name,email:driver.email,phone:driver.phone,role:driver.role,vehicleType:driver.vehicleType}},'Driver account created.');
   }
@@ -1505,9 +1575,23 @@ exports.handler = async (event) => {
     await seedIfEmpty().catch(e=>console.error('[PFC] Seed error:',e.message));
     return await route(method,path,event);
   } catch(err) {
-    console.error('[PFC] Handler error:',err);
+    // ── NEVER CRASH: catch all async errors (Task 12) ──────────
+    console.error('[PFC] UNHANDLED_ERROR path:'+path+' method:'+method+' err:'+err.message);
     if (err.code===11000) {
       const field=Object.keys(err.keyValue||{})[0];
+      // orderToken duplicate = idempotency race — return existing order silently (Task 12)
+      if (field==='orderToken' && err.keyValue?.orderToken) {
+        const ip=(event.headers['x-forwarded-for']||'').split(',')[0].trim()||'unknown';
+        console.log(`[PFC] DUPLICATE_TOKEN_RACE orderToken:${err.keyValue.orderToken} ip:${ip}`);
+        try {
+          const { Order:OrderM } = getModels();
+          const dup = await OrderM.findOne({ orderToken: err.keyValue.orderToken });
+          if (dup) return R.ok({ order: dup }, 'Order already placed (duplicate prevented).');
+        } catch(_) {}
+      }
+      // phone/email duplicate on user creation
+      if (field==='phone') return R.bad('An account with this mobile number already exists.');
+      if (field==='email') return R.bad('An account with this email already exists.');
       return R.bad((field||'Field')+' already exists.');
     }
     if (err.name==='ValidationError') {
@@ -1515,6 +1599,7 @@ exports.handler = async (event) => {
       return R.json({success:false,message:'Validation failed',errors},400);
     }
     if (err.name==='CastError') return R.bad('Invalid ID.');
+    // Always return structured JSON — never let server crash (Task 12)
     return R.err(err.message||'Internal server error');
   }
 };

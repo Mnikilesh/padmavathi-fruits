@@ -4916,7 +4916,31 @@ body.on-admin   #floatingCartBar { display: none !important; }
 <div class="toast" id="toast"></div>
 
 <script>
-const API = window.location.origin + '/api';
+// ── SINGLE BACKEND SOURCE ─────────────────────────────────────
+// Set RENDER_BACKEND to your Render URL once deployed.
+// While on Netlify-only, leave RENDER_BACKEND as '' and the app uses
+// window.location.origin (current host) automatically.
+const RENDER_BACKEND  = ''; // e.g. 'https://your-app.onrender.com'
+const NETLIFY_BACKEND = window.location.origin;
+const API_BASE        = RENDER_BACKEND || NETLIFY_BACKEND;
+const API             = API_BASE + '/api';
+
+// Fetch with automatic Render→Netlify fallback + 3s timeout (Task 9)
+// Prevents hanging requests — fails fast and switches backend
+async function fetchWithFallback(path) {
+  if (!RENDER_BACKEND) return fetch(NETLIFY_BACKEND + path).then(r => r.json());
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3000);
+  try {
+    const r = await fetch(RENDER_BACKEND + path, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!r.ok) throw new Error('render-err');
+    return r.json();
+  } catch (_) {
+    clearTimeout(timeout);
+    return fetch(NETLIFY_BACKEND + path).then(r => r.json());
+  }
+}
 
 // ─── CONTACT INFO SYSTEM ──────────────────────────────────────────────────
 // Default contacts (used if admin has never saved custom ones)
@@ -5221,8 +5245,14 @@ async function http(method, path, body, skipAuth, skipGuard) {
   // Force auth on admin/driver routes even if skipAuth was accidentally set
   const forceAuth = path && (path.includes('/admin/') || path.includes('/driver/'));
   if (AT.a && (!skipAuth || forceAuth)) h['Authorization'] = 'Bearer ' + AT.a;
+
+  // Task 9: Abort after 10s to prevent hanging requests
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
   try {
-    const r = await fetch(API + path, { method, headers: h, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const r = await fetch(API + path, { method, headers: h, signal: controller.signal, ...(body ? { body: JSON.stringify(body) } : {}) });
+    clearTimeout(timeoutId);
     // Safely parse JSON — server may return HTML on errors
     let d = {};
     try { d = await r.json(); } catch(_) { d = { message: 'Server error (status ' + r.status + ')' }; }
@@ -5232,8 +5262,10 @@ async function http(method, path, body, skipAuth, skipGuard) {
     }
     return { ok: r.ok, status: r.status, ...d };
   } catch (e) {
-    console.error('HTTP error:', method, path, e.message);
-    return { ok: false, status: 0, message: 'Cannot reach server. Make sure node server.js is running.' };
+    clearTimeout(timeoutId);
+    const isTimeout = e.name === 'AbortError';
+    console.error('HTTP error:', method, path, isTimeout ? 'TIMEOUT' : e.message);
+    return { ok: false, status: 0, message: isTimeout ? 'Request timed out. Please check your connection and try again.' : 'Cannot reach server. Make sure node server.js is running.' };
   }
 }
 const GET   = p     => http('GET',    p, null, false, false);
@@ -5443,7 +5475,13 @@ async function doRegister() {
     AT.set(r.accessToken, r.refreshToken); currentUser = r.user;
     updateNavAuth(); closeAuth();
     toast('Welcome, ' + r.user.name.split(' ')[0] + '!');
-  } else { document.getElementById('registerErr').textContent = r.message || 'Registration failed.'; }
+  } else {
+    // Show specific duplicate errors prominently
+    const msg = r.message || 'Registration failed.';
+    document.getElementById('registerErr').textContent = msg;
+    if (msg.includes('email')) document.getElementById('r-email')?.focus();
+    else if (msg.includes('mobile')) document.getElementById('r-phone')?.focus();
+  }
 }
 
 
@@ -7621,7 +7659,16 @@ async function placeOrder() {
     if (reqKg > f.stock) { toast('Only ' + f.stock + 'kg of ' + c.name + ' available.', 'error'); return; }
   }
   const btn = document.getElementById('placeBtn');
+  // ── MULTI-SUBMIT PROTECTION: disable immediately on click ──
+  if (btn.disabled) return; // already submitting — hard block
   btn.textContent = 'Placing Order…'; btn.disabled = true;
+
+  // ── IDEMPOTENCY: generate a unique token for this order attempt ──
+  // UUID is sent to server; server rejects duplicate POSTs with same token.
+  const orderToken = (typeof crypto !== 'undefined' && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'pfc-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+
   async function resetCartAndSuccess(orderId) {
     // Deduct juice stock
     cart.filter(c => c.isJuice).forEach(c => {
@@ -7727,6 +7774,7 @@ async function placeOrder() {
     orderNotes:    notes + juiceNote + (appliedCoupon ? ' [Coupon: ' + appliedCoupon.code + ']' : ''),
     paymentMethod: payMethod,
     platformFee:   _pfee,
+    orderToken:    orderToken, // idempotency key — server deduplicates on this
   };
 
   // Attach receiver details if ordering for someone else
@@ -7775,13 +7823,15 @@ async function placeOrder() {
 
   try {
     const r = await POST('/orders', payload);
-    btn.textContent = 'Place Order'; btn.disabled = false;
 
     if (r.ok && r.order) {
-      // ✅ Server saved it — show success with real order ID
+      // ✅ Server saved it (new or duplicate-prevented) — show success
       await resetCartAndSuccess(r.order.orderId);
+      // btn stays disabled — page transitions to success, no re-enable needed
     } else {
-      // ⚠️ Server rejected — save locally so user keeps their order
+      // ⚠️ Server rejected — re-enable button so user can retry
+      btn.textContent = 'Place Order'; btn.disabled = false;
+      // save locally so user keeps their order
       const fallbackId = '#PFC-' + Math.floor(10000 + Math.random() * 90000);
       const orderItems = cart.map(ci => ({
         name: ci.name, emoji: ci.emoji || '🍎',
@@ -9456,7 +9506,7 @@ async function startOrderTracking(orderId) {
     if (!document.getElementById('orderTrackInfo_' + orderId)) { stopOrderTracking(); return; }
     if (sessionStorage.getItem('pfc_track_done_' + orderId)) { stopOrderTracking(); return; }
     await _pollOrderTracking(orderId);
-  }, 20000); // 20s (was 15s) — adequate for delivery ETA updates
+  }, 45000); // 45s — push notifications handle real-time; polling is fallback only
 }
 
 function stopOrderTracking() {
