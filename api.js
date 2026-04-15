@@ -1574,7 +1574,7 @@ const server = http.createServer(async (req, res) => {
     await connectDB();
 
     const url = new URL(req.url, `http://${req.headers.host}`);
-    const path = url.pathname.replace(/^\/api/, '') || '/';
+    const path = url.pathname;
     const method = req.method;
 
     let body = '';
