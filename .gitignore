@@ -28,3 +28,5 @@ server.js
 run.bat
 install.bat
 START_HERE.bat
+# ── OS / Scripts ───────────────────────────────────────────────
+*.bat

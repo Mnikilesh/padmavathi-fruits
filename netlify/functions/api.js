@@ -634,7 +634,7 @@ async function route(method, path, event) {
   if (method==='GET' && path==='/api/fruits') {
     const filter={isAvailable:true,isDeleted:false};
     const {category,search,minPrice,maxPrice,featured,inStock,tag}=q;
-    if (category&&category!=='All') filter.category=category;
+    if (category&&category!=='All') filter.category={$regex:'^'+category+'$',$options:'i'};
     if (featured==='true')  filter.isFeatured=true;
     if (inStock==='true')   filter.stock={$gt:0};
     if (tag)                filter.tags=tag;
@@ -698,7 +698,7 @@ async function route(method, path, event) {
     const page=Math.max(1,+q.page||1),limit=Math.min(100,+q.limit||50);
     const filter={isDeleted:{$ne:true}};
     if (q.search) filter.$or=[{name:{$regex:q.search,$options:'i'}},{variety:{$regex:q.search,$options:'i'}}];
-    if (q.category) filter.category=q.category;
+    if (q.category) filter.category={$regex:'^'+q.category+'$',$options:'i'};
     const [fruits,total]=await Promise.all([
       Fruit.find(filter).sort({createdAt:-1}).skip((page-1)*limit).limit(limit),
       Fruit.countDocuments(filter)
@@ -1343,17 +1343,21 @@ async function route(method, path, event) {
     if (auth.user.role!=='driver') return R.noauth('Driver only.');
     const {lat,lng,orderId}=body;
     if (!lat||!lng) return R.bad('lat and lng required.');
+    const now = new Date();
     // Update driver's own profile
     await User.findByIdAndUpdate(auth.user._id,{
-      currentLat:+lat, currentLng:+lng, locationUpdatedAt:new Date()
+      currentLat:+lat, currentLng:+lng, locationUpdatedAt:now
     });
-    // If currently on a delivery, update that order too (for user tracking)
-    if (orderId) {
-      await Order.findOneAndUpdate(
-        {orderId,assignedDriver:auth.user._id,status:'out_for_delivery'},
-        {driverLat:+lat,driverLng:+lng,driverLocationUpdatedAt:new Date()}
-      );
-    }
+    // Update active out_for_delivery order(s) for this driver —
+    // use orderId if provided, otherwise find the active order automatically.
+    // This ensures location always reaches the order even if the client
+    // didn't pass orderId (e.g. after a page reload).
+    const orderFilter = orderId
+      ? { orderId, assignedDriver:auth.user._id, status:'out_for_delivery' }
+      : { assignedDriver:auth.user._id, status:'out_for_delivery' };
+    await Order.updateMany(orderFilter, {
+      driverLat:+lat, driverLng:+lng, driverLocationUpdatedAt:now
+    });
     return R.ok({},'Location updated');
   }
 
