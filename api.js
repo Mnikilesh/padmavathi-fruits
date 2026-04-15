@@ -5,6 +5,8 @@
  ╚══════════════════════════════════════════════════════════════╝
 */
 require('dotenv').config();
+console.log("JWT:", process.env.JWT_SECRET ? "OK" : "MISSING");
+console.log("MONGO:", process.env.MONGODB_URI ? "OK" : "MISSING");
 'use strict';
 
 const mongoose      = require('mongoose');
