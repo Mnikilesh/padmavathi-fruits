@@ -10596,7 +10596,8 @@ async function saveFruit() {
   if (r.ok) {
     toast(id ? 'Fruit updated' : 'Fruit added');
     closeFruitModal();
-    await loadFruits();
+    invalidateFruitsCache();       // bust sessionStorage so CDN-fresh data loads
+    await loadFruits(true);        // force server fetch, skip cache
     syncCartWithCatalog(); // reflect price/availability changes in cart
     renderJuicesGrid();
     loadAdminFruits();
@@ -13548,7 +13549,7 @@ async function adminBulkDelete(id, name) {
       const d = await r.json().catch(() => ({}));
       if (r.ok) {
         toast(name + ' deleted.');
-        removeLocalFruit(id); renderShopFruits(allFruits); renderHomeFruits(); renderBulkPanel(); loadAdminFruits();
+        removeLocalFruit(id); invalidateFruitsCache(); renderShopFruits(allFruits); renderHomeFruits(); renderBulkPanel(); loadAdminFruits();
       } else toast(d.message || 'Delete failed.', 'error');
     },
     '🗑️'
@@ -13571,7 +13572,8 @@ async function saveBulkStock() {
   if (btn) { btn.textContent = 'Save All'; btn.disabled = false; }
   if (saved > 0) {
     toast('✅ ' + saved + ' stock' + (saved>1?'s':'') + ' updated!');
-    await loadFruits();
+    invalidateFruitsCache();
+    await loadFruits(true);
     toggleBulkStockMode();
     loadAdminFruits();
   }
@@ -14730,29 +14732,59 @@ function syncAdminOrderNowUI(enabled) {
   sublabel.textContent    = enabled ? 'Customers can place instant orders' : 'Instant orders are blocked';
 }
 
-/* ── Admin: save platform fee ─────────────────────────────── */
-function savePlatformFee() {
+/* ── Admin: save platform fee → MongoDB (syncs across all platforms) ── */
+async function savePlatformFee() {
   const input = document.getElementById('platformFeeInput');
   const msg   = document.getElementById('platformFeeMsg');
   if (!input) return;
   const val = Math.max(0, parseInt(input.value) || 0);
   input.value = val;
-  localStorage.setItem(PFC_PLATFORM_FEE_KEY, String(val));
-  if (msg) {
-    msg.style.color   = '#065f46';
-    msg.textContent   = val === 0 ? 'Platform fee disabled (₹0).' : '✅ Platform fee set to ₹' + val + ' per order.';
-    setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
+  if (msg) { msg.style.color = '#888'; msg.textContent = 'Saving…'; }
+  try {
+    const resp = await fetch(API + '/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ key: 'platformFee', value: val })
+    });
+    if (resp.ok) {
+      localStorage.setItem(PFC_PLATFORM_FEE_KEY, String(val));  // local cache
+      if (msg) {
+        msg.style.color = '#065f46';
+        msg.textContent = val === 0 ? '✅ Disabled (₹0) — saved to DB.' : '✅ ₹' + val + ' per order — saved to DB.';
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
+      }
+      toast('💳 Platform fee saved: ₹' + val, 'success');
+    } else {
+      if (msg) { msg.style.color = 'red'; msg.textContent = 'Save failed. Check your connection.'; }
+    }
+  } catch(e) {
+    if (msg) { msg.style.color = 'red'; msg.textContent = 'Error: ' + e.message; }
   }
-  toast('💳 Platform fee saved: ₹' + val, 'success');
+}
+
+/* ── Load platform fee from DB on page load (works across Render + Netlify) ── */
+async function loadPlatformFeeFromServer() {
+  try {
+    const resp = await fetch(API + '/settings/public');
+    if (!resp.ok) return;
+    const d = await resp.json();
+    if (d.success && d.settings != null && d.settings.platformFee !== undefined) {
+      const val = Number(d.settings.platformFee) || 0;
+      localStorage.setItem(PFC_PLATFORM_FEE_KEY, String(val));
+      const feeInput = document.getElementById('platformFeeInput');
+      if (feeInput) feeInput.value = val;
+    }
+  } catch(_) { /* fall back to localStorage value */ }
 }
 
 /* ── Admin panel boot: restore saved values ───────────────── */
 function initAdminControls() {
   // Restore toggle state
   syncAdminOrderNowUI(isOrderNowEnabled());
-  // Restore platform fee
+  // Show localStorage value immediately, then sync from DB
   const feeInput = document.getElementById('platformFeeInput');
   if (feeInput) feeInput.value = getPlatformFee();
+  loadPlatformFeeFromServer(); // always sync from MongoDB so Render+Netlify stay in sync
 }
 
 /* ── Checkout: handle "Order Now" slot click when disabled ── */
@@ -15039,6 +15071,7 @@ async function init() {
   buildHoursTable();
   buildCatBar();
   updateCartCount();
+  loadPlatformFeeFromServer(); // sync platform fee from MongoDB on every page load
 
   // ── BOOTSTRAP SESSION LOCK ────────────────────────────────────
   // /api/bootstrap is called AT MOST ONCE per session (30-minute window).

@@ -207,6 +207,13 @@ const pushSubSchema = new mongoose.Schema({
   ts:           { type:Number, default:Date.now },
 }, { timestamps:true });
 
+// ── Settings: key/value store for admin config (platform fee, order-now toggle, etc.)
+// Stored in MongoDB so all platforms (Render, Netlify, Cloudflare) read the same values.
+const settingsSchema = new mongoose.Schema({
+  key:   { type:String, required:true, unique:true },
+  value: { type:mongoose.Schema.Types.Mixed },
+}, { timestamps:true });
+
 // ─── RATE LIMITER (Task 10) ──────────────────────────────────
 // Per-IP: max 100 requests per 15 minutes — in-memory, free-tier safe
 const _rlMap = new Map();
@@ -235,11 +242,12 @@ function getIP(event) {
 
 function getModels() {
   return {
-    User:    mongoose.models.User    || mongoose.model('User',    userSchema),
-    Fruit:   mongoose.models.Fruit   || mongoose.model('Fruit',   fruitSchema),
-    Order:   mongoose.models.Order   || mongoose.model('Order',   orderSchema),
-    Review:  mongoose.models.Review  || mongoose.model('Review',  reviewSchema),
-    PushSub: mongoose.models.PushSub || mongoose.model('PushSub', pushSubSchema),
+    User:     mongoose.models.User     || mongoose.model('User',     userSchema),
+    Fruit:    mongoose.models.Fruit    || mongoose.model('Fruit',    fruitSchema),
+    Order:    mongoose.models.Order    || mongoose.model('Order',    orderSchema),
+    Review:   mongoose.models.Review   || mongoose.model('Review',   reviewSchema),
+    PushSub:  mongoose.models.PushSub  || mongoose.model('PushSub',  pushSubSchema),
+    Settings: mongoose.models.Settings || mongoose.model('Settings', settingsSchema),
   };
 }
 
@@ -674,10 +682,8 @@ async function route(method, path, event) {
       ...R.ok({ fruits: fruitsRes, user: userRes || null }),
       headers: {
         ...R.ok({}).headers,
-        // Fruits are public-safe to cache at the CDN edge for 5 min (s-maxage).
-        // User data is private — the CDN must not cache it, but the browser can
-        // revalidate stale content for up to 30s (stale-while-revalidate).
-        'Cache-Control': 'private, max-age=0, s-maxage=300, stale-while-revalidate=30',
+        // private = CDN must NOT cache (contains user data). Browser can cache briefly.
+        'Cache-Control': 'private, max-age=0, no-store',
       }
     };
   }
@@ -703,13 +709,12 @@ async function route(method, path, event) {
       Fruit.find(filter).sort(sort).skip((page-1)*limit).limit(limit).lean(),
       Fruit.countDocuments(filter)
     ]);
-    // Cache fruits list at Netlify CDN for 5 min (s-maxage)
-    // Browser also caches for 30s (max-age) for repeated calls
+    // Cache fruits list at CDN for 30s max so newly added fruits appear quickly.
     return {
       ...R.ok({fruits,pagination:{page,limit,total,pages:Math.ceil(total/limit)}}),
       headers: {
         ...R.ok({}).headers,
-        'Cache-Control': 'public, max-age=30, s-maxage=300, stale-while-revalidate=60',
+        'Cache-Control': 'public, max-age=10, s-maxage=30, stale-while-revalidate=10',
         'Vary': 'Accept-Encoding',
       }
     };
@@ -829,7 +834,10 @@ async function route(method, path, event) {
         imageUrl,
         fruit_images,
       });
-      return R.created({ fruit }, 'Fruit added');
+      return {
+        ...R.created({ fruit }, 'Fruit added'),
+        headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' }
+      };
     } catch(e) { return R.err(e.message || 'Failed to create fruit.'); }
   }
 
@@ -1637,6 +1645,37 @@ async function route(method, path, event) {
     return R.created({driver:{_id:driver._id,name:driver.name,email:driver.email,phone:driver.phone,role:driver.role,vehicleType:driver.vehicleType}},'Driver account created.');
   }
 
+  // ── SETTINGS: public read — no auth, used by checkout to get platformFee ──
+  if (method==='GET' && path==='/api/settings/public') {
+    const { Settings } = getModels();
+    const rows = await Settings.find({}).lean();
+    const settings = Object.fromEntries(rows.map(r=>[r.key, r.value]));
+    return { ...R.ok({ settings }), headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' } };
+  }
+
+  // ── SETTINGS: admin read ──
+  if (method==='GET' && path==='/api/admin/settings') {
+    const auth=await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role!=='admin') return R.noauth('Admin only.');
+    const { Settings } = getModels();
+    const rows = await Settings.find({}).lean();
+    const settings = Object.fromEntries(rows.map(r=>[r.key, r.value]));
+    return R.ok({ settings });
+  }
+
+  // ── SETTINGS: admin write — upserts a key/value setting into MongoDB ──
+  if (method==='POST' && path==='/api/admin/settings') {
+    const auth=await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role!=='admin') return R.noauth('Admin only.');
+    const { Settings } = getModels();
+    const { key, value } = body;
+    if (!key) return R.bad('key required.');
+    await Settings.findOneAndUpdate({ key }, { value }, { upsert:true, new:true });
+    return R.ok({ key, value }, 'Setting saved.');
+  }
+
   // ── NOT FOUND ─────────────────────────────────────────────────
   return R.nf(`Route not found: ${method} ${path}`);
 }
@@ -1698,10 +1737,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Running on ${PORT}`);
 });
-exports.handler = async (event) => {
-  await connectDB();
-  return route(event.httpMethod, event.path, event);
-};
 
 // ─── NETLIFY HANDLER ─────────────────────────────────────────
 
