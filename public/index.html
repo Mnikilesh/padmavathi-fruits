@@ -4927,27 +4927,12 @@ body.on-admin   #floatingCartBar { display: none !important; }
 <div class="toast" id="toast"></div>
 
 <script>
-// ── SINGLE BACKEND SOURCE ─────────────────────────────────────
-// Set RENDER_BACKEND to your Render URL once deployed.
-// While on Netlify-only, leave RENDER_BACKEND as '' and the app uses
-// window.location.origin (current host) automatically.
+// ── SINGLE BACKEND ────────────────────────────────────────────
 const API = 'https://padmavathi-fruits.onrender.com/api';
 
-// Fetch with automatic Render→Netlify fallback + 3s timeout (Task 9)
-// Prevents hanging requests — fails fast and switches backend
+// Simple fetch helper — always hits Render backend
 async function fetchWithFallback(path) {
-  if (!RENDER_BACKEND) return fetch(NETLIFY_BACKEND + path).then(r => r.json());
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3000);
-  try {
-    const r = await fetch(RENDER_BACKEND + path, { signal: controller.signal });
-    clearTimeout(timeout);
-    if (!r.ok) throw new Error('render-err');
-    return r.json();
-  } catch (_) {
-    clearTimeout(timeout);
-    return fetch(NETLIFY_BACKEND + path).then(r => r.json());
-  }
+  return fetch(API + path).then(r => r.json());
 }
 
 // ─── CONTACT INFO SYSTEM ──────────────────────────────────────────────────
@@ -7723,7 +7708,7 @@ async function placeOrder() {
     // Invalidate fruit cache after checkout (stock may have changed)
     // Next page navigation will fetch fresh data
     invalidateFruitsCache();
-    const fr = await GET('/fruits?limit=100');
+    const fr = await GET('/fruits?limit=100&ts=' + Date.now());
     if (fr.ok && fr.fruits) {
       allFruits = fr.fruits;
       try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: fr.fruits })); } catch(_) {}
