@@ -778,11 +778,50 @@ async function route(method, path, event) {
     const auth=await authenticate(event.headers);
     if (auth.err) return auth.err;
     if (auth.user.role!=='admin') return R.noauth('Admin only.');
-    const data={...body};
-    if (data.isFeatured!==undefined)  data.isFeatured  = data.isFeatured==='true'||data.isFeatured===true;
-    if (data.isAvailable!==undefined) data.isAvailable = data.isAvailable==='true'||data.isAvailable===true;
-    const fruit=await Fruit.create(data);
-    return R.created({fruit},'Fruit added');
+    try {
+      const { fileBuffer, fileMime, fields } = await parseMultipartUpload(event);
+      let imageUrl = fields.imageUrl || '';
+      if (fileBuffer && fileBuffer.length > 0) {
+        if (!['image/jpeg','image/png','image/webp'].includes(fileMime)) return R.bad('Images only (jpg/png/webp).');
+        if (fileBuffer.length > 5*1024*1024) return R.bad('Image must be under 5MB.');
+        const uploaded = await uploadToCloudinary(fileBuffer, fileMime);
+        imageUrl = uploaded.secure_url;
+      }
+      let fruit_images;
+      try { fruit_images = fields.fruit_images ? JSON.parse(fields.fruit_images) : (imageUrl ? [imageUrl] : []); }
+      catch(_) { fruit_images = imageUrl ? [imageUrl] : []; }
+      let benefits;
+      try { benefits = fields.benefits ? JSON.parse(fields.benefits) : []; }
+      catch(_) { benefits = []; }
+      let customUnits;
+      try { customUnits = fields.customUnits ? JSON.parse(fields.customUnits) : []; }
+      catch(_) { customUnits = []; }
+      let origin;
+      try { origin = fields.origin ? JSON.parse(fields.origin) : {}; }
+      catch(_) { origin = {}; }
+      const fruit = await Fruit.create({
+        name:              fields.name,
+        variety:           fields.variety || fields.name,
+        category:          fields.category || 'Daily',
+        emoji:             fields.emoji || '🍎',
+        price:             Number(fields.price),
+        stock:             Number(fields.quantity || fields.stock || 0),
+        discountPercent:   Number(fields.discountPercent || 0),
+        description:       fields.description || '',
+        benefits,
+        unitType:          fields.unitType || 'weight',
+        customUnits,
+        badge:             fields.badge || '',
+        badgeLabel:        fields.badgeLabel || '',
+        isFeatured:        fields.isFeatured === 'true',
+        isAvailable:       fields.isAvailable !== 'false',
+        lowStockThreshold: Number(fields.lowStockThreshold || 5),
+        origin,
+        imageUrl,
+        fruit_images,
+      });
+      return R.created({ fruit }, 'Fruit added');
+    } catch(e) { return R.err(e.message || 'Failed to create fruit.'); }
   }
 
   if (method==='PATCH' && /^\/api\/fruits\/[^/]+\/stock$/.test(path)) {
@@ -878,13 +917,41 @@ async function route(method, path, event) {
     const auth=await authenticate(event.headers);
     if (auth.err) return auth.err;
     if (auth.user.role!=='admin') return R.noauth('Admin only.');
-    const id=path.split('/').pop();
-    const up={...body};
-    if (up.isFeatured!==undefined)  up.isFeatured  = up.isFeatured==='true'||up.isFeatured===true;
-    if (up.isAvailable!==undefined) up.isAvailable = up.isAvailable==='true'||up.isAvailable===true;
-    const fruit=await Fruit.findByIdAndUpdate(id,up,{new:true,runValidators:true});
-    if (!fruit) return R.nf('Fruit not found.');
-    return R.ok({fruit},'Updated');
+    const id = path.split('/').pop();
+    try {
+      const { fileBuffer, fileMime, fields } = await parseMultipartUpload(event);
+      let imageUrl = fields.imageUrl || undefined;
+      if (fileBuffer && fileBuffer.length > 0) {
+        if (!['image/jpeg','image/png','image/webp'].includes(fileMime)) return R.bad('Images only (jpg/png/webp).');
+        if (fileBuffer.length > 5*1024*1024) return R.bad('Image must be under 5MB.');
+        const uploaded = await uploadToCloudinary(fileBuffer, fileMime);
+        imageUrl = uploaded.secure_url;
+      }
+      const up = {};
+      if (fields.name !== undefined)            up.name = fields.name;
+      if (fields.variety !== undefined)         up.variety = fields.variety;
+      if (fields.category !== undefined)        up.category = fields.category;
+      if (fields.emoji !== undefined)           up.emoji = fields.emoji;
+      if (fields.price !== undefined)           up.price = Number(fields.price);
+      if (fields.quantity !== undefined)        up.stock = Number(fields.quantity);
+      if (fields.stock !== undefined)           up.stock = Number(fields.stock);
+      if (fields.discountPercent !== undefined) up.discountPercent = Number(fields.discountPercent);
+      if (fields.description !== undefined)     up.description = fields.description;
+      if (fields.benefits !== undefined)        { try { up.benefits = JSON.parse(fields.benefits); } catch(_) {} }
+      if (fields.unitType !== undefined)        up.unitType = fields.unitType;
+      if (fields.customUnits !== undefined)     { try { up.customUnits = JSON.parse(fields.customUnits); } catch(_) {} }
+      if (fields.badge !== undefined)           up.badge = fields.badge;
+      if (fields.badgeLabel !== undefined)      up.badgeLabel = fields.badgeLabel;
+      if (fields.isFeatured !== undefined)      up.isFeatured = fields.isFeatured === 'true';
+      if (fields.isAvailable !== undefined)     up.isAvailable = fields.isAvailable !== 'false';
+      if (fields.lowStockThreshold !== undefined) up.lowStockThreshold = Number(fields.lowStockThreshold);
+      if (fields.origin !== undefined)          { try { up.origin = JSON.parse(fields.origin); } catch(_) {} }
+      if (fields.fruit_images !== undefined)    { try { up.fruit_images = JSON.parse(fields.fruit_images); } catch(_) {} }
+      if (imageUrl)                             up.imageUrl = imageUrl;
+      const fruit = await Fruit.findByIdAndUpdate(id, { $set: up }, { new: true, runValidators: true });
+      if (!fruit) return R.nf('Fruit not found.');
+      return R.ok({ fruit }, 'Updated');
+    } catch(e) { return R.err(e.message || 'Failed to update fruit.'); }
   }
 
   if (method==='DELETE' && /^\/api\/fruits\/[^/]+$/.test(path)) {

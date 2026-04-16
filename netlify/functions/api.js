@@ -4,6 +4,9 @@
  ║   v4 — GPS · Real-Time Polling · Atomic Accept · Driver UI   ║
  ╚══════════════════════════════════════════════════════════════╝
 */
+require('dotenv').config();
+console.log("JWT:", process.env.JWT_SECRET ? "OK" : "MISSING");
+console.log("MONGO:", process.env.MONGODB_URI ? "OK" : "MISSING");
 'use strict';
 
 const mongoose      = require('mongoose');
@@ -13,9 +16,9 @@ const crypto        = require('crypto');
 const Busboy        = require('busboy');
 const cloudinary    = require('cloudinary').v2;
 
-if (!process.env.JWT_SECRET) throw new Error("JWT_SECRET missing");
-if (!process.env.JWT_REFRESH_SECRET) throw new Error("JWT_REFRESH_SECRET missing");
-if (!process.env.MONGODB_URI) throw new Error("MONGODB_URI missing");
+if (!process.env.JWT_SECRET) console.error("JWT_SECRET missing");
+if (!process.env.JWT_REFRESH_SECRET) console.error("JWT_REFRESH_SECRET missing");
+if (!process.env.MONGODB_URI) console.error("MONGODB_URI missing");
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
@@ -1562,7 +1565,57 @@ async function route(method, path, event) {
   return R.nf(`Route not found: ${method} ${path}`);
 }
 
+const http = require('http');
 
+const PORT = process.env.PORT || 10000;
+
+const server = http.createServer(async (req, res) => {
+  try {
+    await connectDB();
+
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const path = url.pathname;
+    const method = req.method;
+
+    let body = '';
+    req.on('data', chunk => body += chunk);
+
+    req.on('end', async () => {
+
+      const event = {
+        httpMethod: method,
+        path: path,
+        headers: req.headers,
+        body: body || null,
+        isBase64Encoded: false,
+        queryStringParameters: Object.fromEntries(url.searchParams)
+      };
+
+      if (method === 'OPTIONS') {
+        res.writeHead(200, corsHeaders());
+        return res.end();
+      }
+
+      const result = await route(method, path, event);
+
+      res.writeHead(result.statusCode || 200, result.headers);
+      res.end(result.body);
+    });
+
+  } catch (err) {
+    console.error(err);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ success: false }));
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 Running on ${PORT}`);
+});
+exports.handler = async (event) => {
+  await connectDB();
+  return route(event.httpMethod, event.path, event);
+};
 
 // ─── NETLIFY HANDLER ─────────────────────────────────────────
 
@@ -1608,60 +1661,7 @@ exports.handler = async (event) => {
     // Always return structured JSON — never let server crash (Task 12)
     return R.err(err.message||'Internal server error');
   }
+  
+  
 
-  // ─────────────────────────────────────────────────────────────
-// RENDER SERVER WRAPPER (DO NOT REMOVE NETLIFY HANDLER ABOVE)
-// ─────────────────────────────────────────────────────────────
-
-if (require.main === module) {
-  const http = require('http');
-  const PORT = process.env.PORT || 10000;
-
-  const server = http.createServer(async (req, res) => {
-    try {
-      await connectDB();
-
-      // Parse URL
-      const url = new URL(req.url, `http://${req.headers.host}`);
-      const path = url.pathname;
-      const method = req.method;
-
-      // Collect body
-      let body = '';
-      req.on('data', chunk => body += chunk);
-      req.on('end', async () => {
-
-        const event = {
-          httpMethod: method,
-          path: path,
-          headers: req.headers,
-          body: body || null,
-          isBase64Encoded: false,
-          queryStringParameters: Object.fromEntries(url.searchParams)
-        };
-
-        // Handle OPTIONS (CORS preflight)
-        if (method === 'OPTIONS') {
-          res.writeHead(200, corsHeaders());
-          return res.end();
-        }
-
-        const result = await route(method, path, event);
-
-        res.writeHead(result.statusCode || 200, result.headers);
-        res.end(result.body);
-
-      });
-
-    } catch (err) {
-      console.error('[SERVER ERROR]', err);
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ success: false, message: 'Server crashed' }));
-    }
-  });
-
-  server.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
-  });
-}
 };

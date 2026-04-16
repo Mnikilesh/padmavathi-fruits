@@ -4931,10 +4931,7 @@ body.on-admin   #floatingCartBar { display: none !important; }
 // Set RENDER_BACKEND to your Render URL once deployed.
 // While on Netlify-only, leave RENDER_BACKEND as '' and the app uses
 // window.location.origin (current host) automatically.
-const RENDER_BACKEND  = 'https://padmavathi-fruits.onrender.com'; // e.g. 'https://your-app.onrender.com'
-const NETLIFY_BACKEND = window.location.origin;
-const API_BASE        = RENDER_BACKEND || NETLIFY_BACKEND;
-const API             = API_BASE + '/api';
+const API = 'https://padmavathi-fruits.onrender.com/api';
 
 // Fetch with automatic Render→Netlify fallback + 3s timeout (Task 9)
 // Prevents hanging requests — fails fast and switches backend
@@ -5669,7 +5666,7 @@ async function loadFruits(forceRefresh = false) {
       }
     } catch(_) {}
   }
-  const r = await GET('/fruits?limit=100');
+  const r = await GET('/fruits?limit=100&ts=' + Date.now());
   if (r.ok && r.fruits) {
     allFruits = r.fruits;
     // Cache to sessionStorage for 5-min reuse
@@ -10572,32 +10569,50 @@ async function saveFruit() {
   const badgeVal     = document.getElementById('fm-badge').value;
   const benefitsRaw  = document.getElementById('fm-benefits').value.trim();
   const benefits     = benefitsRaw ? benefitsRaw.split('\n').filter(Boolean) : [];
-  const data = {
-    name,
-    imageUrl:    slotUrls[1],
-    fruit_images,
-    emoji:       '🍎',
-    variety:     document.getElementById('fm-variety').value.trim() || name,
-    category:    document.getElementById('fm-category').value,
-    badge:       badgeVal,
-    badgeLabel:  badgeVal ? ({ hot:'Popular', sea:'Seasonal', imp:'Imported', org:'Organic', new:'New', sale:'Sale' }[badgeVal] || badgeVal) : '',
-    price:       parseFloat(price),
-    stock:       parseFloat(stock),
-    discountPercent: parseFloat(document.getElementById('fm-discount').value || 0),
-    description: document.getElementById('fm-desc').value.trim(),
-    benefits,
-    unitType:    document.getElementById('fm-unitType').value,
-    customUnits: document.getElementById('fm-unitType').value === 'custom' ? getCustomUnitsFromUI() : [],
-    isFeatured:  document.getElementById('fm-featured').value === 'true',
-    isAvailable: document.getElementById('fm-available').value === 'true',
-    seasonStart: parseInt(document.getElementById('fm-season-start')?.value || '0') || null,
-    seasonEnd:   parseInt(document.getElementById('fm-season-end')?.value   || '0') || null,
-    lowStockThreshold: parseFloat(document.getElementById('fm-lowstock').value || 5),
-    origin:      { region: document.getElementById('fm-origin').value.trim() },
-  };
+  const formData = new FormData();
+  formData.append('name', name);
+  formData.append('imageUrl', slotUrls[1] || '');
+  formData.append('fruit_images', JSON.stringify(fruit_images));
+  formData.append('emoji', '🍎');
+  formData.append('variety', document.getElementById('fm-variety').value.trim() || name);
+  formData.append('category', document.getElementById('fm-category').value);
+  formData.append('badge', badgeVal);
+  formData.append('badgeLabel', badgeVal ? ({ hot:'Popular', sea:'Seasonal', imp:'Imported', org:'Organic', new:'New', sale:'Sale' }[badgeVal] || badgeVal) : '');
+  formData.append('price', parseFloat(price));
+  formData.append('quantity', parseFloat(stock));
+  formData.append('stock', parseFloat(stock));
+  formData.append('discountPercent', parseFloat(document.getElementById('fm-discount').value || 0));
+  formData.append('description', document.getElementById('fm-desc').value.trim());
+  formData.append('benefits', JSON.stringify(benefits));
+  formData.append('unitType', document.getElementById('fm-unitType').value);
+  formData.append('customUnits', JSON.stringify(document.getElementById('fm-unitType').value === 'custom' ? getCustomUnitsFromUI() : []));
+  formData.append('isFeatured', document.getElementById('fm-featured').value === 'true' ? 'true' : 'false');
+  formData.append('isAvailable', document.getElementById('fm-available').value === 'true' ? 'true' : 'false');
+  formData.append('seasonStart', parseInt(document.getElementById('fm-season-start')?.value || '0') || '');
+  formData.append('seasonEnd', parseInt(document.getElementById('fm-season-end')?.value || '0') || '');
+  formData.append('lowStockThreshold', parseFloat(document.getElementById('fm-lowstock').value || 5));
+  formData.append('origin', JSON.stringify({ region: document.getElementById('fm-origin').value.trim() }));
+
+  // Attach image file if a new one was selected via the slot upload inputs
+  const imgFileInput = document.getElementById('slot-file-1') || document.querySelector('input[type="file"][data-slot="1"]');
+  if (imgFileInput && imgFileInput.files && imgFileInput.files[0]) {
+    formData.append('image', imgFileInput.files[0]);
+  }
+
   const btn = document.querySelector('#fruitModal .modal-submit');
   btn.textContent = 'Saving…'; btn.disabled = true;
-  const r = id ? await PATCH('/fruits/' + id, data) : await POST('/fruits', data);
+
+  const authHeaders = AT.a ? { Authorization: 'Bearer ' + AT.a } : {};
+  const endpoint = id ? (API + '/fruits/' + id) : (API + '/fruits');
+  const fetchMethod = id ? 'PATCH' : 'POST';
+  let r;
+  try {
+    const resp = await fetch(endpoint, { method: fetchMethod, headers: authHeaders, body: formData });
+    r = await resp.json();
+    r.ok = resp.ok;
+  } catch(e) {
+    r = { ok: false, message: 'Network error: ' + e.message };
+  }
   btn.textContent = 'Save Fruit'; btn.disabled = false;
   if (r.ok) {
     toast(id ? 'Fruit updated' : 'Fruit added');
