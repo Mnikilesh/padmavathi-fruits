@@ -10418,10 +10418,10 @@ function slotFileChosen(n) {
 
 async function uploadSlotFile(n, file) {
   if (!['image/jpeg','image/png','image/webp'].includes(file.type)) {
-    toast(', .', ''); return;
+    toast('Invalid file type. Use JPG, PNG or WebP.', 'error'); return;
   }
   if (file.size > 5 * 1024 * 1024) {
-    toast('Invalid or expired coupon.', 'error'); return;
+    toast('Image must be under 5MB.', 'error'); return;
   }
   const inner = document.getElementById('slotInner-' + n);
   const overlay = document.createElement('div');
@@ -10443,15 +10443,15 @@ async function uploadSlotFile(n, file) {
     overlay.remove();
     if (data.success && data.url) {
       setSlotUrl(n, data.url);
-      if (statusEl) { statusEl.textContent = 'Image ' + n + ' saved'; setTimeout(() => { statusEl.textContent = ''; }, 2500); }
+      if (statusEl) { statusEl.textContent = 'Image ' + n + ' saved ✓'; setTimeout(() => { statusEl.textContent = ''; }, 2500); }
     } else {
       if (statusEl) statusEl.textContent = '';
-      toast('Upload failed: ' + (err?.message || 'Error'), 'error');
+      toast('Upload failed: ' + (data.message || 'Server error'), 'error');
     }
   } catch(err) {
     overlay.remove();
     if (statusEl) statusEl.textContent = '';
-    toast('Upload failed. Please try again.', 'error');
+    toast('Upload failed: ' + err.message, 'error');
   }
 }
 
@@ -10546,7 +10546,7 @@ async function saveFruit() {
       return;
     }
   }
-  if (!slotUrls[1]) {
+  if (!id && !slotUrls[1]) {
     document.getElementById('fruitErr').textContent = 'Please upload at least one image (Image 1).';
     return;
   }
@@ -10577,12 +10577,6 @@ async function saveFruit() {
   formData.append('seasonEnd', parseInt(document.getElementById('fm-season-end')?.value || '0') || '');
   formData.append('lowStockThreshold', parseFloat(document.getElementById('fm-lowstock').value || 5));
   formData.append('origin', JSON.stringify({ region: document.getElementById('fm-origin').value.trim() }));
-
-  // Attach image file if a new one was selected via the slot upload inputs
-  const imgFileInput = document.getElementById('slot-file-1') || document.querySelector('input[type="file"][data-slot="1"]');
-  if (imgFileInput && imgFileInput.files && imgFileInput.files[0]) {
-    formData.append('image', imgFileInput.files[0]);
-  }
 
   const btn = document.querySelector('#fruitModal .modal-submit');
   btn.textContent = 'Saving…'; btn.disabled = true;

@@ -360,22 +360,31 @@ async function authenticate(headers) {
 
 function parseMultipartUpload(event) {
   return new Promise((resolve, reject) => {
-    const body = event.isBase64Encoded
-      ? Buffer.from(event.body, 'base64')
-      : Buffer.from(event.body || '');
-    const bb = Busboy({ headers: { 'content-type': event.headers['content-type'] || event.headers['Content-Type'] } });
-    let fileBuffer=null, fileName='', fileMime='';
-    const fields={};
+    // Prefer _rawBuffer (set by HTTP server) — avoids string-encoding corruption of binary data.
+    // Fall back to legacy base64/string body for Netlify handler compatibility.
+    let body;
+    if (event._rawBuffer && Buffer.isBuffer(event._rawBuffer)) {
+      body = event._rawBuffer;
+    } else if (event.isBase64Encoded && event.body) {
+      body = Buffer.from(event.body, 'base64');
+    } else {
+      body = Buffer.from(event.body || '');
+    }
+    const contentType = event.headers['content-type'] || event.headers['Content-Type'] || '';
+    const bb = Busboy({ headers: { 'content-type': contentType } });
+    let fileBuffer = null, fileName = '', fileMime = '';
+    const fields = {};
     bb.on('file', (name, stream, info) => {
-      fileName=info.filename; fileMime=info.mimeType;
-      const chunks=[];
-      stream.on('data',d=>chunks.push(d));
-      stream.on('end',()=>{ fileBuffer=Buffer.concat(chunks); });
+      fileName = info.filename; fileMime = info.mimeType;
+      const chunks = [];
+      stream.on('data', d => chunks.push(d));
+      stream.on('end', () => { fileBuffer = Buffer.concat(chunks); });
     });
-    bb.on('field',(name,val)=>{ fields[name]=val; });
-    bb.on('close',()=>resolve({ fileBuffer,fileName,fileMime,fields }));
-    bb.on('error',reject);
-    bb.write(body); bb.end();
+    bb.on('field', (name, val) => { fields[name] = val; });
+    bb.on('close', () => resolve({ fileBuffer, fileName, fileMime, fields }));
+    bb.on('error', reject);
+    bb.write(body);
+    bb.end();
   });
 }
 
@@ -1644,17 +1653,27 @@ const server = http.createServer(async (req, res) => {
     const path = url.pathname;
     const method = req.method;
 
-    let body = '';
-    req.on('data', chunk => body += chunk);
+    // Collect body as Buffer chunks — string concatenation corrupts binary (multipart) data
+    const chunks = [];
+    req.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
 
     req.on('end', async () => {
+      const rawBuffer = chunks.length ? Buffer.concat(chunks) : null;
+
+      // For multipart requests pass the raw Buffer directly; for JSON pass string
+      const contentType = (req.headers['content-type'] || '');
+      const isMultipart = contentType.includes('multipart/form-data');
+      const bodyPayload = rawBuffer
+        ? (isMultipart ? rawBuffer : rawBuffer.toString('utf8'))
+        : null;
 
       const event = {
         httpMethod: method,
         path: path,
         headers: req.headers,
-        body: body || null,
+        body: bodyPayload,
         isBase64Encoded: false,
+        _rawBuffer: rawBuffer,   // available for parseMultipartUpload
         queryStringParameters: Object.fromEntries(url.searchParams)
       };
 
