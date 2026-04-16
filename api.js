@@ -560,10 +560,10 @@ async function route(method, path, event) {
 
   // ── RATE LIMIT: applies to every API route (Task 10) ──────────
   const clientIP = getIP(event);
-  if (!rateLimit(clientIP)) {
-    console.warn(`[PFC] Rate limit exceeded ip:${clientIP} path:${path}`);
-    return R.json({ success:false, message:'Too many requests. Please wait 15 minutes.' }, 429);
-  }
+  // if (!rateLimit(clientIP)) {
+  //   console.warn(`[PFC] Rate limit exceeded ip:${clientIP} path:${path}`);
+  //   return R.json({ success:false, message:'Too many requests. Please wait 15 minutes.' }, 429);
+  // }
 
   if (method==='GET' && path==='/health') return R.ok({ uptime:process.uptime().toFixed(0)+'s' });
 
