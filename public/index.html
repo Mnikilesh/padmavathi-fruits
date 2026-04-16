@@ -7508,20 +7508,21 @@ function selectPayment(el, method) {
 }
 
 
-// ─── LOCAL ORDERS (juice-only + guest orders) ────────────────
-const LOCAL_ORDERS_KEY = 'pfc_local_orders';
+// ─── LOCAL ORDERS (bulk/admin scratch orders — in-memory only) ────────────────
+// NOTE: These are NOT real orders — they are admin-created bulk/manual records
+// stored only for the current browser session. Real orders go through /api/orders.
+const LOCAL_ORDERS_KEY = 'pfc_local_orders';  // kept for compat but not used for writes
+
+let _localOrders = [];
 
 function getLocalOrders() {
-  try { return JSON.parse(localStorage.getItem(LOCAL_ORDERS_KEY) || '[]'); }
-  catch(e) { return []; }
+  return _localOrders;
 }
 
 function saveLocalOrder(orderId, orderData) {
-  const orders = getLocalOrders();
-  orders.unshift({ ...orderData, orderId, createdAt: new Date().toISOString(), _local: true });
-  // Keep last 50 local orders
-  if (orders.length > 50) orders.splice(50);
-  localStorage.setItem(LOCAL_ORDERS_KEY, JSON.stringify(orders));
+  _localOrders.unshift({ ...orderData, orderId, createdAt: new Date().toISOString(), _local: true });
+  // Keep last 50 local orders in memory
+  if (_localOrders.length > 50) _localOrders.splice(50);
 }
 
 // --- PINCODE DELIVERY RESTRICTION ---
@@ -9891,12 +9892,11 @@ async function cancelMyOrder(orderId) {
     'Cancel Order',
     'Are you sure you want to cancel order <b>' + orderId + '</b>? This cannot be undone.',
     async () => {
-      // Check if it's a local order first
+      // Check if it's a local (in-memory) order first
       const localOrders = getLocalOrders();
       const localIdx = localOrders.findIndex(o => o.orderId === orderId);
       if (localIdx > -1) {
         localOrders[localIdx].status = 'cancelled';
-        localStorage.setItem('pfc_local_orders', JSON.stringify(localOrders));
         toast('Order ' + orderId + ' cancelled.');
         loadMyOrders();
         return;
@@ -9952,7 +9952,7 @@ function switchAdminTab(tab) {
   const lastLoaded = window._adminTabTs[tab] || 0;
   const tabIsStale = (Date.now() - lastLoaded) > TAB_CACHE_TTL;
 
-  if (tab === 'bundles') loadAdminBundles();        // bundles are localStorage only
+  if (tab === 'bundles') loadAdminBundles();        // MongoDB-backed
   if (tab === 'overview') { initAdminControls(); renderAdminContactRows(); if (tabIsStale) { loadAdminOverview(); window._adminTabTs.overview = Date.now(); } }
   if (tab === 'fruits')  {
     // Debounce: ignore rapid repeated clicks (500ms window)
@@ -9984,7 +9984,7 @@ function switchAdminTab(tab) {
   // The unconditional call made the TTL check meaningless; every drivers-tab click fired 2 API requests.
   if (tab === 'drivers' && tabIsStale) { loadAdminDrivers(); window._adminTabTs.drivers = Date.now(); }
   if (tab === 'sales')    { initSalesYears(); loadSalesReport(); }
-  if (tab === 'offline')  { initBillForm(); renderOfflineSales(); }
+  if (tab === 'offline')  { initBillForm(); loadOfflineSalesFromAPI(); }
 }
 
 async function loadAdminOverview() {
@@ -10608,16 +10608,32 @@ async function saveFruit() {
 
 
 // ─── JUICE MANAGEMENT ────────────────────────────────────
-let localJuices = JSON.parse(localStorage.getItem('pfc_juices') || 'null') || [
-  { id:'j1', name:'Fresh Orange Juice',  desc:'Cold pressed · no added sugar',    img:'', price:60, moo:500, stock:25, category:'Cold Pressed', status:'soon', benefits:['Rich in Vitamin C','Boosts immunity'] },
-  { id:'j2', name:'Lemon Mint Cooler',   desc:'Fresh squeezed with mint leaves',  img:'', price:40, moo:500, stock:20, category:'Fresh',        status:'soon', benefits:['Refreshing & hydrating','Good for digestion'] },
-  { id:'j3', name:'Watermelon Juice',    desc:'Seasonal special · naturally sweet',img:'',price:50, moo:500, stock:15, category:'Seasonal',     status:'soon', benefits:['Keeps you hydrated','Rich in lycopene'] },
-  { id:'j4', name:'Mango Lassi',         desc:'Alphonso mango blend · creamy',    img:'', price:80, moo:500, stock:10, category:'Blend',        status:'soon', benefits:['Rich in Vitamin A','Probiotic benefits'] },
-  { id:'j5', name:'Grape Juice',         desc:'Seedless grapes · chilled',        img:'', price:70, moo:500, stock:18, category:'Cold Pressed', status:'soon', benefits:['Antioxidant rich','Good for heart health'] },
-  { id:'j6', name:'Pineapple Ginger',    desc:'Fresh blend with ginger kick',     img:'', price:65, moo:500, stock:12, category:'Blend',        status:'soon', benefits:['Anti-inflammatory','Aids digestion'] },
-];
+// ⚡ Backend-driven: all juice data lives in MongoDB, never localStorage.
+// localJuices is an in-memory mirror refreshed by loadJuicesFromAPI().
+let localJuices = [];
 
-function saveJuices() { localStorage.setItem('pfc_juices', JSON.stringify(localJuices)); }
+// Normalize a juice doc from MongoDB so old code that uses .id still works
+function _normalizeJuice(j) {
+  return Object.assign({}, j, { id: j._id || j.id });
+}
+
+async function loadJuicesFromAPI() {
+  try {
+    const r = await fetch(API + '/juices?ts=' + Date.now());
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.success && Array.isArray(d.juices)) {
+      localJuices = d.juices.map(_normalizeJuice);
+      renderJuicesGrid();
+      if (document.getElementById('jAdminTable')) loadJuicesAdminPanel();
+    }
+  } catch(e) { console.warn('[PFC] loadJuicesFromAPI error', e); }
+}
+
+// saveJuices() is now a no-op — stock changes during cart ops are ephemeral
+// in-memory only; the authoritative stock lives in MongoDB and is refreshed
+// by polling. This prevents stale writes from overwriting server state.
+function saveJuices() { /* no-op: juice data is owned by MongoDB */ }
 
 // ── JUICE UNIT OPTIONS ──────────────────────────────────
 function getJuiceUnits(j) {
@@ -11103,7 +11119,7 @@ function jClearSlots() {
 function jLoadSlots(j) { jSetSlot(1,j.img||''); jSetSlot(2,j.img2||''); }
 function previewJuiceImg() {} // kept for compat
 
-function saveJuice() {
+async function saveJuice() {
   const id    = document.getElementById('jm-id').value;
   const name  = document.getElementById('jm-name').value.trim();
   const price = parseFloat(document.getElementById('jm-price').value);
@@ -11113,8 +11129,7 @@ function saveJuice() {
   if (!moo || moo < 100) { document.getElementById('juiceErr').textContent = 'Minimum order must be at least 100ml.'; return; }
 
   const benefitsRaw = document.getElementById('jm-benefits').value.trim();
-  const juice = {
-    id:              id || 'j' + Date.now(),
+  const payload = {
     name,
     desc:            document.getElementById('jm-desc').value.trim(),
     img:             document.getElementById('jm-img').value.trim(),
@@ -11128,18 +11143,23 @@ function saveJuice() {
     benefits:        benefitsRaw ? benefitsRaw.split('\n').map(b=>b.trim()).filter(Boolean) : [],
   };
 
-  if (id) {
-    const idx = localJuices.findIndex(j => j.id === id);
-    if (idx > -1) localJuices[idx] = juice;
-    toast('Juice updated!');
-  } else {
-    localJuices.unshift(juice);
-    toast('Juice added!');
+  const errEl = document.getElementById('juiceErr');
+  try {
+    const url    = id ? (API + '/juices/' + id) : (API + '/juices');
+    const method = id ? 'PATCH' : 'POST';
+    const r = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) { if(errEl) errEl.textContent = d.message || 'Save failed.'; return; }
+    toast(id ? 'Juice updated!' : 'Juice added!', 'success');
+    closeJuiceModal();
+    await loadJuicesFromAPI();   // force-refresh from server
+  } catch(e) {
+    if(errEl) errEl.textContent = 'Network error: ' + e.message;
   }
-  saveJuices();
-  closeJuiceModal();
-  loadJuicesAdminPanel();
-  renderJuicesGrid(); // refresh shop juices section
 }
 
 function deleteJuice(id) {
@@ -11148,16 +11168,19 @@ function deleteJuice(id) {
   showConfirmModal(
     'Delete Juice',
     'Delete <b>' + juiceName + '</b>?<br><span style="font-size:12px;color:var(--red)">This cannot be undone.</span>',
-    () => {
-      const idx = localJuices.findIndex(j => j.id === id);
-      if (idx > -1) {
-        localJuices.splice(idx, 1); saveJuices();
+    async () => {
+      try {
+        const r = await fetch(API + '/juices/' + id, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + AT.a },
+        });
+        if (!r.ok) { toast('Delete failed.', 'error'); return; }
         // Remove from cart too
         cart = cart.filter(c => c.fid !== id);
         saveCart(); updateCartCount(); renderCartDrawer();
-        loadJuicesAdminPanel(); renderJuicesGrid();
+        await loadJuicesFromAPI();
         toast('Juice deleted.');
-      }
+      } catch(e) { toast('Network error.', 'error'); }
     },
     '🗑️'
   );
@@ -11565,7 +11588,6 @@ function saveLocalOrderStatus() {
     orders[idx].status = status;
     if (status === 'delivered') orders[idx].paymentStatus = 'paid';
     if (status === 'cancelled') orders[idx].paymentStatus = 'failed';
-    localStorage.setItem('pfc_local_orders', JSON.stringify(orders));
     toast('Order ' + orderId + ' updated to ' + status + '.');
     closeStatusModal();
     loadAdminOrders();
@@ -12156,25 +12178,23 @@ function getBillData() {
   };
 }
 
-function saveBillAsRecord() {
+async function saveBillAsRecord() {
   const bill = getBillData();
   const errEl = document.getElementById('billErr');
   if (!bill.items.length) { if(errEl) errEl.textContent='Add at least one item.'; return; }
   if(errEl) errEl.textContent='';
-  const sales = getOfflineSales();
-  sales.unshift({
-    id: bill.billNo,
+  const saleData = {
     name: bill.name, phone: bill.phone,
     items: bill.items.map(r => r.item + ' ' + r.qty + r.unit).join(', '),
     itemsDetail: bill.items,
     amount: bill.subtotal,
     pay: bill.pay, date: bill.date, notes: '',
-    createdAt: bill.createdAt
-  });
-  saveOfflineSales(sales);
-  toast('Bill saved as offline sale record!');
-  renderOfflineSales();
-  initBillForm();
+  };
+  const saved = await saveOfflineSale(saleData);
+  if (saved) {
+    toast('Bill saved as offline sale record!');
+    initBillForm();
+  }
 }
 
 function printBill() {
@@ -12722,10 +12742,43 @@ function _exportSalesPDF(rawRows, year, view) {
 }
 
 // ─── OFFLINE SALES ─────────────────────────────────────────
-function getOfflineSales() {
-  try { return JSON.parse(localStorage.getItem('pfc_offline_sales') || '[]'); } catch(e) { return []; }
+// ⚡ Backend-driven: all offline sales live in MongoDB, never localStorage.
+let _localOfflineSales = [];   // in-memory mirror
+
+async function loadOfflineSalesFromAPI() {
+  try {
+    const r = await fetch(API + '/offline-sales?ts=' + Date.now(), {
+      headers: { 'Authorization': 'Bearer ' + AT.a },
+    });
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.success && Array.isArray(d.sales)) {
+      _localOfflineSales = d.sales.map(s => Object.assign({}, s, { id: s.saleId || s._id }));
+      renderOfflineSales();
+    }
+  } catch(e) { console.warn('[PFC] loadOfflineSalesFromAPI error', e); }
 }
-function saveOfflineSales(arr) { localStorage.setItem('pfc_offline_sales', JSON.stringify(arr)); }
+
+function getOfflineSales() { return _localOfflineSales; }
+
+async function saveOfflineSale(saleData) {
+  try {
+    const r = await fetch(API + '/offline-sales', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify(saleData),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.message || 'Save failed');
+    await loadOfflineSalesFromAPI();
+    return d.sale;
+  } catch(e) { toast('Failed to save sale: ' + e.message, 'error'); return null; }
+}
+
+// Legacy compat shim — old code called saveOfflineSales(arr); redirect to API
+function saveOfflineSales(arr) {
+  console.warn('[PFC] saveOfflineSales() called with array — use saveOfflineSale() per item instead.');
+}
 
 function renderOfflineSales() {
   const tbl = document.getElementById('offlineSalesTable');
@@ -12775,10 +12828,16 @@ function deleteOfflineSale(id) {
   showConfirmModal(
     'Delete Sale',
     'Delete this offline sale record? This cannot be undone.',
-    () => {
-      saveOfflineSales(getOfflineSales().filter(s => s.id !== id));
-      renderOfflineSales();
-      toast('Sale deleted.');
+    async () => {
+      try {
+        const r = await fetch(API + '/offline-sales/' + id, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + AT.a },
+        });
+        if (!r.ok) { toast('Delete failed.', 'error'); return; }
+        await loadOfflineSalesFromAPI();
+        toast('Sale deleted.');
+      } catch(e) { toast('Network error.', 'error'); }
     },
     '🗑️'
   );
@@ -13836,10 +13895,9 @@ function submitBulkOrder() {
   openWhatsApp(decodeURIComponent(msg.replace(/\+/g,' ')));
   toast('Order sent via WhatsApp! We\'ll confirm within 2 hours.');
 
-  // Also save locally
-  const localOrders = getLocalOrders();
+  // Also save locally (in-memory only — bulk orders are WhatsApp-confirmed, not real orders)
   const orderId = '#BULK-' + Math.floor(10000 + Math.random()*90000);
-  localOrders.unshift({
+  _localOrders.unshift({
     orderId, createdAt: new Date().toISOString(),
     status: 'placed', paymentStatus: 'pending', paymentMethod: 'cod',
     customerName: name, customerPhone: phone,
@@ -13851,8 +13909,7 @@ function submitBulkOrder() {
     }),
     totalAmount: 0, deliveryFee: 0, _local: true, _bulk: true,
   });
-  if (localOrders.length > 50) localOrders.splice(50);
-  localStorage.setItem('pfc_local_orders', JSON.stringify(localOrders));
+  if (_localOrders.length > 50) _localOrders.splice(50);
 }
 
 
@@ -14446,9 +14503,7 @@ function deleteLocalAdminOrder(orderId) {
     'Delete Local Order',
     'Delete local order <b>' + orderId + '</b>?<br><span style="font-size:12px;color:var(--red)">This cannot be undone.</span>',
     () => {
-      const orders = getLocalOrders();
-      const filtered = orders.filter(o => o.orderId !== orderId);
-      localStorage.setItem('pfc_local_orders', JSON.stringify(filtered));
+      _localOrders = _localOrders.filter(o => o.orderId !== orderId);
       toast('Local order deleted.');
       loadAdminOrders();
     },
@@ -14695,28 +14750,30 @@ function parseSchedToken(orderNotes) {
 
 // ═══════════════════════════════════════════════════════════
 //  OFF-TIME CONTROL + PLATFORM FEE
+//  ⚡ Fully backend-driven — no localStorage for business state.
+//  In-memory cache only for UI responsiveness.
 // ═══════════════════════════════════════════════════════════
 
-/* ── Storage keys ─────────────────────────────────────────── */
-const PFC_ORDER_NOW_KEY   = 'pfc_order_now_enabled';  // 'true'/'false'
-const PFC_PLATFORM_FEE_KEY = 'pfc_platform_fee';       // numeric string
+let _orderNowEnabled  = true;   // in-memory mirror from server
+let _platformFeeCache = 0;      // in-memory mirror from server
 
-/* ── Helpers ──────────────────────────────────────────────── */
-function isOrderNowEnabled() {
-  const v = localStorage.getItem(PFC_ORDER_NOW_KEY);
-  return v === null ? true : v === 'true';   // default: enabled
-}
+function isOrderNowEnabled() { return _orderNowEnabled; }
+function getPlatformFee()    { return _platformFeeCache; }
 
-function getPlatformFee() {
-  return parseFloat(localStorage.getItem(PFC_PLATFORM_FEE_KEY) || '0') || 0;
-}
-
-/* ── Admin: toggle Order Now ──────────────────────────────── */
-function toggleOrderNow() {
-  const enabled = !isOrderNowEnabled();
-  localStorage.setItem(PFC_ORDER_NOW_KEY, String(enabled));
-  syncAdminOrderNowUI(enabled);
-  toast(enabled ? '✅ Order Now enabled' : '🚫 Order Now disabled — instant orders blocked', enabled ? 'success' : 'error');
+/* ── Admin: toggle Order Now → save to MongoDB ── */
+async function toggleOrderNow() {
+  const enabled = !_orderNowEnabled;
+  try {
+    const r = await fetch(API + '/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ key: 'orderNowEnabled', value: enabled }),
+    });
+    if (!r.ok) { toast('Toggle failed.', 'error'); return; }
+    _orderNowEnabled = enabled;
+    syncAdminOrderNowUI(enabled);
+    toast(enabled ? '✅ Order Now enabled' : '🚫 Order Now disabled — instant orders blocked', enabled ? 'success' : 'error');
+  } catch(e) { toast('Network error.', 'error'); }
 }
 
 function syncAdminOrderNowUI(enabled) {
@@ -14732,7 +14789,7 @@ function syncAdminOrderNowUI(enabled) {
   sublabel.textContent    = enabled ? 'Customers can place instant orders' : 'Instant orders are blocked';
 }
 
-/* ── Admin: save platform fee → MongoDB (syncs across all platforms) ── */
+/* ── Admin: save platform fee → MongoDB ── */
 async function savePlatformFee() {
   const input = document.getElementById('platformFeeInput');
   const msg   = document.getElementById('platformFeeMsg');
@@ -14747,7 +14804,7 @@ async function savePlatformFee() {
       body: JSON.stringify({ key: 'platformFee', value: val })
     });
     if (resp.ok) {
-      localStorage.setItem(PFC_PLATFORM_FEE_KEY, String(val));  // local cache
+      _platformFeeCache = val;
       if (msg) {
         msg.style.color = '#065f46';
         msg.textContent = val === 0 ? '✅ Disabled (₹0) — saved to DB.' : '✅ ₹' + val + ' per order — saved to DB.';
@@ -14762,29 +14819,32 @@ async function savePlatformFee() {
   }
 }
 
-/* ── Load platform fee from DB on page load (works across Render + Netlify) ── */
+/* ── Load all settings from DB (platform fee + orderNow) ── */
 async function loadPlatformFeeFromServer() {
   try {
-    const resp = await fetch(API + '/settings/public');
+    const resp = await fetch(API + '/settings/public?ts=' + Date.now());
     if (!resp.ok) return;
     const d = await resp.json();
-    if (d.success && d.settings != null && d.settings.platformFee !== undefined) {
-      const val = Number(d.settings.platformFee) || 0;
-      localStorage.setItem(PFC_PLATFORM_FEE_KEY, String(val));
-      const feeInput = document.getElementById('platformFeeInput');
-      if (feeInput) feeInput.value = val;
+    if (d.success && d.settings != null) {
+      if (d.settings.platformFee !== undefined) {
+        _platformFeeCache = Number(d.settings.platformFee) || 0;
+        const feeInput = document.getElementById('platformFeeInput');
+        if (feeInput) feeInput.value = _platformFeeCache;
+      }
+      if (d.settings.orderNowEnabled !== undefined) {
+        _orderNowEnabled = d.settings.orderNowEnabled !== false && d.settings.orderNowEnabled !== 'false';
+        syncAdminOrderNowUI(_orderNowEnabled);
+      }
     }
-  } catch(_) { /* fall back to localStorage value */ }
+  } catch(_) { /* retain in-memory values */ }
 }
 
-/* ── Admin panel boot: restore saved values ───────────────── */
+/* ── Admin panel boot: sync from MongoDB ── */
 function initAdminControls() {
-  // Restore toggle state
-  syncAdminOrderNowUI(isOrderNowEnabled());
-  // Show localStorage value immediately, then sync from DB
+  syncAdminOrderNowUI(_orderNowEnabled);
   const feeInput = document.getElementById('platformFeeInput');
-  if (feeInput) feeInput.value = getPlatformFee();
-  loadPlatformFeeFromServer(); // always sync from MongoDB so Render+Netlify stay in sync
+  if (feeInput) feeInput.value = _platformFeeCache;
+  loadPlatformFeeFromServer(); // always fetch fresh from MongoDB
 }
 
 /* ── Checkout: handle "Order Now" slot click when disabled ── */
@@ -15171,8 +15231,36 @@ async function init() {
   // NOTE: loadFruits() no longer called here — served from bootstrap above
   // Init bottom tab bar for mobile/PWA
   initBottomTabBar();
-  // Refresh fruit catalog ONLY when user returns to tab after 5+ minutes
-  // (replaces the wasteful 60-second polling — saves ~12 serverless calls/session)
+
+  // ── LOAD JUICES + BASKETS from MongoDB on boot ────────────────
+  loadJuicesFromAPI();
+  loadBasketsFromAPI();
+
+  // ── REAL-TIME SYNC POLLING ─────────────────────────────────────
+  // Every 5 seconds: fetch juices + baskets (fruit catalog uses its own
+  // visibilitychange strategy above). ?ts= busts CDN/browser cache.
+  let _rtPollTimer = null;
+  function _startRealTimePolling() {
+    if (_rtPollTimer) return;
+    _rtPollTimer = setInterval(async () => {
+      try {
+        const [jr, br] = await Promise.all([
+          fetch(API + '/juices?ts=' + Date.now()).then(r => r.ok ? r.json() : null),
+          fetch(API + '/baskets?ts=' + Date.now()).then(r => r.ok ? r.json() : null),
+        ]);
+        if (jr?.success && Array.isArray(jr.juices)) {
+          localJuices = jr.juices.map(_normalizeJuice);
+          renderJuicesGrid();
+        }
+        if (br?.success && Array.isArray(br.baskets)) {
+          _localBaskets = br.baskets.map(_normalizeBasket);
+          renderBundlesPage();
+        }
+      } catch(_) { /* network blip — skip tick */ }
+    }, 5000);
+  }
+
+  // Pause polling when tab is hidden, resume on return
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       // OPT: Admin — check for new orders immediately on tab return instead of
@@ -15186,20 +15274,47 @@ async function init() {
           if (Date.now() - ts > 30 * 60 * 1000) loadFruits(); // stale after 30 min
         } catch(_) { loadFruits(); }
       }
+      // Resume real-time polling on tab return
+      _startRealTimePolling();
+    } else {
+      // Pause polling when tab hidden to save bandwidth
+      if (_rtPollTimer) { clearInterval(_rtPollTimer); _rtPollTimer = null; }
     }
   });
+
+  // Start polling immediately
+  _startRealTimePolling();
 }
 
-// ─── BUNDLES SYSTEM ─────────────────────────────────────
-const BUNDLES_KEY = 'pfc_bundles';
+// ─── BASKETS / BUNDLES SYSTEM ────────────────────────────
+// ⚡ Backend-driven: all basket data lives in MongoDB, never localStorage.
+let _localBaskets = [];   // in-memory mirror, refreshed by loadBasketsFromAPI()
 
-function getBundles() {
-  try { return JSON.parse(localStorage.getItem(BUNDLES_KEY) || '[]'); }
-  catch(e) { return []; }
+function _normalizeBasket(b) {
+  return Object.assign({}, b, { id: b._id || b.id });
 }
-function saveBundles(arr) { localStorage.setItem(BUNDLES_KEY, JSON.stringify(arr)); }
+
+async function loadBasketsFromAPI() {
+  try {
+    const r = await fetch(API + '/baskets?ts=' + Date.now());
+    if (!r.ok) return;
+    const d = await r.json();
+    if (d.success && Array.isArray(d.baskets)) {
+      _localBaskets = d.baskets.map(_normalizeBasket);
+      renderBundlesPage();
+      if (document.getElementById('adminBundlesTable')) loadAdminBundles();
+    }
+  } catch(e) { console.warn('[PFC] loadBasketsFromAPI error', e); }
+}
+
+function getBundles() { return _localBaskets; }
+// saveBundles() kept as a bridge but is now a no-op — writes go through API
+function saveBundles(arr) { /* no-op: basket data is owned by MongoDB */ }
 
 function loadAdminBundles() {
+  // Data is already in _localBaskets (refreshed by loadBasketsFromAPI).
+  // If empty, trigger a fetch then re-render.
+  if (_localBaskets.length === 0) { loadBasketsFromAPI(); return; }
   const tbl = document.getElementById('adminBundlesTable');
   if (!tbl) return;
   const bundles = getBundles();
@@ -15242,7 +15357,7 @@ function openBundleModal(id) {
 
 function closeBundleModal() { document.getElementById('bundleModal').classList.remove('show'); }
 
-function saveBundleFromModal() {
+async function saveBundleFromModal() {
   const name  = document.getElementById('bm-name').value.trim();
   const price = parseFloat(document.getElementById('bm-price').value);
   const items = document.getElementById('bm-items').value.trim();
@@ -15250,10 +15365,8 @@ function saveBundleFromModal() {
     document.getElementById('bundleErr').textContent = 'Name, price and items are required.';
     return;
   }
-  const bundles = getBundles();
   const existId = document.getElementById('bm-id').value;
-  const bundle = {
-    id:        existId || ('b' + Date.now()),
+  const payload = {
     name, price,
     origPrice: parseFloat(document.getElementById('bm-origprice').value) || null,
     emoji:     document.getElementById('bm-emoji').value.trim() || '🎁',
@@ -15261,18 +15374,23 @@ function saveBundleFromModal() {
     items,
     badge:     document.getElementById('bm-badge').value.trim(),
     active:    document.getElementById('bm-active').value === '1',
-    createdAt: existId ? (bundles.find(x=>x.id===existId)?.createdAt || new Date().toISOString()) : new Date().toISOString(),
   };
-  if (existId) {
-    const idx = bundles.findIndex(x=>x.id===existId);
-    if (idx > -1) bundles[idx] = bundle; else bundles.unshift(bundle);
-  } else {
-    bundles.unshift(bundle);
+  try {
+    const url    = existId ? (API + '/baskets/' + existId) : (API + '/baskets');
+    const method = existId ? 'PATCH' : 'POST';
+    const r = await fetch(url, {
+      method,
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+    if (!r.ok) { document.getElementById('bundleErr').textContent = d.message || 'Save failed.'; return; }
+    closeBundleModal();
+    await loadBasketsFromAPI();
+    toast('Bundle saved!');
+  } catch(e) {
+    document.getElementById('bundleErr').textContent = 'Network error: ' + e.message;
   }
-  saveBundles(bundles);
-  closeBundleModal();
-  loadAdminBundles();
-  toast('Bundle saved!');
 }
 
 function deleteBundle(id) {
@@ -15281,14 +15399,19 @@ function deleteBundle(id) {
   showConfirmModal(
     'Delete Bundle',
     'Delete <b>' + bundleName + '</b> bundle?<br><span style="font-size:12px;color:var(--red)">This cannot be undone.</span>',
-    () => {
-      const updated = getBundles().filter(b => b.id !== id);
-      saveBundles(updated);
-      // Remove from cart too
-      cart = cart.filter(c => c.bundleId !== id);
-      saveCart(); updateCartCount(); renderCartDrawer();
-      loadAdminBundles();
-      toast('Bundle deleted.');
+    async () => {
+      try {
+        const r = await fetch(API + '/baskets/' + id, {
+          method: 'DELETE',
+          headers: { 'Authorization': 'Bearer ' + AT.a },
+        });
+        if (!r.ok) { toast('Delete failed.', 'error'); return; }
+        // Remove from cart too
+        cart = cart.filter(c => c.bundleId !== id);
+        saveCart(); updateCartCount(); renderCartDrawer();
+        await loadBasketsFromAPI();
+        toast('Bundle deleted.');
+      } catch(e) { toast('Network error.', 'error'); }
     },
     '🗑️'
   );

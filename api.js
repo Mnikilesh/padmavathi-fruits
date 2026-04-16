@@ -214,6 +214,48 @@ const settingsSchema = new mongoose.Schema({
   value: { type:mongoose.Schema.Types.Mixed },
 }, { timestamps:true });
 
+// ── Juice schema ─────────────────────────────────────────────
+const juiceSchema = new mongoose.Schema({
+  name:            { type:String, required:true, trim:true },
+  desc:            String,
+  img:             String,
+  img2:            String,
+  price:           { type:Number, required:true, min:1 },
+  discountPercent: { type:Number, default:0, min:0, max:90 },
+  moo:             { type:Number, default:500 },   // minimum order ml
+  category:        { type:String, default:'Fresh' },
+  status:          { type:String, enum:['available','soon'], default:'soon' },
+  stock:           { type:Number, default:0 },     // litres
+  benefits:        [String],
+  isDeleted:       { type:Boolean, default:false },
+}, { timestamps:true });
+
+// ── Basket / Bundle schema ────────────────────────────────────
+const basketSchema = new mongoose.Schema({
+  name:      { type:String, required:true, trim:true },
+  desc:      String,
+  emoji:     { type:String, default:'🎁' },
+  price:     { type:Number, required:true },
+  origPrice: Number,
+  items:     String,   // display string e.g. "Apple 1kg, Mango 500g"
+  badge:     String,
+  active:    { type:Boolean, default:true },
+  isDeleted: { type:Boolean, default:false },
+}, { timestamps:true });
+
+// ── Offline Sale schema ───────────────────────────────────────
+const offlineSaleSchema = new mongoose.Schema({
+  saleId:      { type:String, unique:true, default:()=>'OS-'+Math.floor(10000+Math.random()*90000) },
+  name:        { type:String, default:'Walk-in' },
+  phone:       String,
+  items:       String,
+  itemsDetail: [{ item:String, qty:Number, unit:String, price:Number }],
+  amount:      { type:Number, required:true },
+  pay:         { type:String, default:'Cash' },
+  notes:       String,
+  date:        String,   // YYYY-MM-DD
+}, { timestamps:true });
+
 // ─── RATE LIMITER (Task 10) ──────────────────────────────────
 // Per-IP: max 100 requests per 15 minutes — in-memory, free-tier safe
 const _rlMap = new Map();
@@ -247,7 +289,10 @@ function getModels() {
     Order:    mongoose.models.Order    || mongoose.model('Order',    orderSchema),
     Review:   mongoose.models.Review   || mongoose.model('Review',   reviewSchema),
     PushSub:  mongoose.models.PushSub  || mongoose.model('PushSub',  pushSubSchema),
-    Settings: mongoose.models.Settings || mongoose.model('Settings', settingsSchema),
+    Settings:    mongoose.models.Settings    || mongoose.model('Settings',    settingsSchema),
+    Juice:       mongoose.models.Juice       || mongoose.model('Juice',       juiceSchema),
+    Basket:      mongoose.models.Basket      || mongoose.model('Basket',      basketSchema),
+    OfflineSale: mongoose.models.OfflineSale || mongoose.model('OfflineSale', offlineSaleSchema),
   };
 }
 
@@ -483,9 +528,19 @@ const SEED_FRUITS = [
   {name:'Avocado',variety:'Hass variety',emoji:'🥑',category:'Imported',price:320,stock:25,badge:'imp',badgeLabel:'Imported',isFeatured:false,tags:['imported','healthy-fat','keto'],description:'Creamy Hass avocados — perfect for salads.'},
 ];
 
+const SEED_JUICES = [
+  { name:'Fresh Orange Juice',  desc:'Cold pressed · no added sugar',     price:60,  moo:500, stock:25, category:'Cold Pressed', status:'soon', benefits:['Rich in Vitamin C','Boosts immunity'] },
+  { name:'Lemon Mint Cooler',   desc:'Fresh squeezed with mint leaves',   price:40,  moo:500, stock:20, category:'Fresh',        status:'soon', benefits:['Refreshing & hydrating','Good for digestion'] },
+  { name:'Watermelon Juice',    desc:'Seasonal special · naturally sweet',price:50,  moo:500, stock:15, category:'Seasonal',     status:'soon', benefits:['Keeps you hydrated','Rich in lycopene'] },
+  { name:'Mango Lassi',         desc:'Alphonso mango blend · creamy',     price:80,  moo:500, stock:10, category:'Blend',        status:'soon', benefits:['Rich in Vitamin A','Probiotic benefits'] },
+  { name:'Grape Juice',         desc:'Seedless grapes · chilled',         price:70,  moo:500, stock:18, category:'Cold Pressed', status:'soon', benefits:['Antioxidant rich','Good for heart health'] },
+  { name:'Pineapple Ginger',    desc:'Fresh blend with ginger kick',      price:65,  moo:500, stock:12, category:'Blend',        status:'soon', benefits:['Anti-inflammatory','Aids digestion'] },
+];
+
 async function seedIfEmpty() {
-  const { Fruit, User } = getModels();
+  const { Fruit, User, Juice } = getModels();
   if (await Fruit.countDocuments()===0) { await Fruit.insertMany(SEED_FRUITS); }
+  if (await Juice.countDocuments()===0) { await Juice.insertMany(SEED_JUICES); }
   const ae = process.env.ADMIN_EMAIL    || 'admin@padmavathifruits.com';
   const ap = process.env.ADMIN_PASSWORD || 'Admin@1234';
   if (!await User.findOne({ email:ae })) {
@@ -1674,6 +1729,161 @@ async function route(method, path, event) {
     if (!key) return R.bad('key required.');
     await Settings.findOneAndUpdate({ key }, { value }, { upsert:true, new:true });
     return R.ok({ key, value }, 'Setting saved.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  JUICES — MongoDB-backed, real-time synced
+  // ══════════════════════════════════════════════════════════
+
+  // Public: list all non-deleted juices (used by shop + polling)
+  if (method==='GET' && path==='/api/juices') {
+    const { Juice } = getModels();
+    const juices = await Juice.find({ isDeleted:false }).sort({ createdAt:-1 }).lean();
+    return {
+      ...R.ok({ juices }),
+      headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' },
+    };
+  }
+
+  // Admin: create juice
+  if (method==='POST' && path==='/api/juices') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const { name, desc, img, img2, price, discountPercent, moo, category, status, stock, benefits } = body;
+    if (!name || !price) return R.bad('Name and price required.');
+    const juice = await Juice.create({ name, desc, img, img2, price:+price, discountPercent:+(discountPercent||0), moo:+(moo||500), category:category||'Fresh', status:status||'soon', stock:+(stock||0), benefits:Array.isArray(benefits)?benefits:[] });
+    return R.created({ juice }, 'Juice added.');
+  }
+
+  // Admin: update juice
+  if (method==='PATCH' && /^\/api\/juices\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const id = path.split('/').pop();
+    const up = {};
+    const allowed = ['name','desc','img','img2','price','discountPercent','moo','category','status','stock','benefits'];
+    for (const k of allowed) { if (body[k] !== undefined) up[k] = body[k]; }
+    const juice = await Juice.findByIdAndUpdate(id, { $set: up }, { new:true, runValidators:true });
+    if (!juice) return R.nf('Juice not found.');
+    return R.ok({ juice }, 'Updated.');
+  }
+
+  // Admin: delete juice
+  if (method==='DELETE' && /^\/api\/juices\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const id = path.split('/').pop();
+    const juice = await Juice.findByIdAndUpdate(id, { isDeleted:true }, { new:true });
+    if (!juice) return R.nf('Juice not found.');
+    return R.ok({}, 'Juice deleted.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  BASKETS / BUNDLES — MongoDB-backed, real-time synced
+  // ══════════════════════════════════════════════════════════
+
+  // Public: list all non-deleted baskets
+  if (method==='GET' && path==='/api/baskets') {
+    const { Basket } = getModels();
+    const baskets = await Basket.find({ isDeleted:false }).sort({ createdAt:-1 }).lean();
+    return {
+      ...R.ok({ baskets }),
+      headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' },
+    };
+  }
+
+  // Admin: create basket
+  if (method==='POST' && path==='/api/baskets') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Basket } = getModels();
+    const { name, desc, emoji, price, origPrice, items, badge, active } = body;
+    if (!name || !price || !items) return R.bad('Name, price, and items are required.');
+    const basket = await Basket.create({ name, desc, emoji:emoji||'🎁', price:+price, origPrice:origPrice?+origPrice:null, items, badge:badge||'', active: active !== false });
+    return R.created({ basket }, 'Basket created.');
+  }
+
+  // Admin: update basket
+  if (method==='PATCH' && /^\/api\/baskets\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Basket } = getModels();
+    const id = path.split('/').pop();
+    const up = {};
+    const allowed = ['name','desc','emoji','price','origPrice','items','badge','active'];
+    for (const k of allowed) { if (body[k] !== undefined) up[k] = body[k]; }
+    const basket = await Basket.findByIdAndUpdate(id, { $set: up }, { new:true, runValidators:true });
+    if (!basket) return R.nf('Basket not found.');
+    return R.ok({ basket }, 'Updated.');
+  }
+
+  // Admin: delete basket
+  if (method==='DELETE' && /^\/api\/baskets\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Basket } = getModels();
+    const id = path.split('/').pop();
+    const basket = await Basket.findByIdAndUpdate(id, { isDeleted:true }, { new:true });
+    if (!basket) return R.nf('Basket not found.');
+    return R.ok({}, 'Basket deleted.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  OFFLINE SALES — MongoDB-backed
+  // ══════════════════════════════════════════════════════════
+
+  // Admin: list offline sales
+  if (method==='GET' && path==='/api/offline-sales') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { OfflineSale } = getModels();
+    const page  = Math.max(1, +q.page||1);
+    const limit = Math.min(200, +q.limit||100);
+    const filter = {};
+    if (q.date) filter.date = q.date;
+    const [sales, total] = await Promise.all([
+      OfflineSale.find(filter).sort({ createdAt:-1 }).skip((page-1)*limit).limit(limit).lean(),
+      OfflineSale.countDocuments(filter),
+    ]);
+    return R.ok({ sales, total, page, pages: Math.ceil(total/limit) });
+  }
+
+  // Admin: create offline sale
+  if (method==='POST' && path==='/api/offline-sales') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { OfflineSale } = getModels();
+    const { name, phone, items, itemsDetail, amount, pay, notes, date } = body;
+    if (!amount || +amount <= 0) return R.bad('Amount required.');
+    const sale = await OfflineSale.create({
+      name: name||'Walk-in', phone, items, itemsDetail:Array.isArray(itemsDetail)?itemsDetail:[],
+      amount: +amount, pay: pay||'Cash', notes,
+      date: date || new Date().toISOString().split('T')[0],
+    });
+    return R.created({ sale }, 'Sale recorded.');
+  }
+
+  // Admin: delete offline sale
+  if (method==='DELETE' && /^\/api\/offline-sales\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { OfflineSale } = getModels();
+    const id = path.split('/').pop();
+    const sale = await OfflineSale.findOneAndDelete({ $or: [{ _id: isValidObjectId(id)?id:null }, { saleId: id }] });
+    if (!sale) return R.nf('Sale not found.');
+    return R.ok({}, 'Sale deleted.');
   }
 
   // ── NOT FOUND ─────────────────────────────────────────────────
