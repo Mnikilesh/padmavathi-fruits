@@ -4943,15 +4943,33 @@ const _defaultContacts = [
   { type: 'address', label: 'Shop Address', value: 'Shop No. 47, Old Grain Market Vegetable Market Road, Girmajipet, Warangal, Telangana – 506002', enabled: true },
 ];
 
+// In-memory mirror — loaded from MongoDB on startup, kept in sync
+let _contactsCache = null;
+
 function _loadContacts() {
+  // Return in-memory cache (populated by loadPublicSettingsFromServer on boot)
+  if (_contactsCache) return _contactsCache;
+  // Fallback: try localStorage migration path (first load before server responds)
   try {
     const raw = localStorage.getItem('pfc_contact_info');
-    if (raw) return JSON.parse(raw);
+    if (raw) { _contactsCache = JSON.parse(raw); return _contactsCache; }
   } catch(e) {}
-  return JSON.parse(JSON.stringify(_defaultContacts));
+  _contactsCache = JSON.parse(JSON.stringify(_defaultContacts));
+  return _contactsCache;
 }
-function _saveContacts(arr) {
-  localStorage.setItem('pfc_contact_info', JSON.stringify(arr));
+
+async function _saveContacts(arr) {
+  _contactsCache = arr;
+  // Persist to MongoDB so ALL platforms (Netlify + Cloudflare) see the change
+  try {
+    await fetch(API + '/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ key: 'contactInfo', value: arr }),
+    });
+    // Also clear localStorage so old stale data is never used again
+    try { localStorage.removeItem('pfc_contact_info'); } catch(_) {}
+  } catch(e) { console.warn('[PFC] Failed to save contact info to server:', e.message); }
 }
 
 // ── User-side: render contact info on the Contact page ──────────────────
@@ -4990,8 +5008,11 @@ function openWhatsApp(msg) {
 // ── Admin-side: render editable rows ────────────────────────────────────
 let _adminContactData = null;
 function _ensureAdminContactData() {
-  if (!_adminContactData) _adminContactData = _loadContacts();
+  // Always re-clone from the server-synced cache so edits start from latest data
+  if (!_adminContactData) _adminContactData = JSON.parse(JSON.stringify(_loadContacts()));
 }
+// Reset when switching to overview tab so stale edits don't persist across tab switches
+function _resetAdminContactData() { _adminContactData = null; }
 
 function renderAdminContactRows() {
   _ensureAdminContactData();
@@ -5045,12 +5066,14 @@ function adminAddContactRow() {
   _adminContactData.push({ type: 'phone', label: '', value: '', enabled: true });
   renderAdminContactRows();
 }
-function adminSaveContact() {
+async function adminSaveContact() {
   _ensureAdminContactData();
-  _saveContacts(_adminContactData);
-  renderContactInfo(); // immediately update the user-facing contact page
   const msg = document.getElementById('adminContactMsg');
-  if (msg) { msg.textContent = '✅ Saved!'; msg.style.color = '#065f46'; setTimeout(() => msg.textContent = '', 3000); }
+  if (msg) { msg.textContent = 'Saving…'; msg.style.color = '#888'; }
+  await _saveContacts(_adminContactData);
+  renderContactInfo(); // immediately update the user-facing contact page
+  if (msg) { msg.textContent = '✅ Saved to server — syncs to all platforms!'; msg.style.color = '#065f46'; setTimeout(() => msg.textContent = '', 4000); }
+  toast('Contact info saved & synced ✅', 'success');
 }
 
 // Auto-render on page load
@@ -5103,15 +5126,31 @@ function calcJuiceUnitPrice(juice, unit) {
   return Math.round(basePrice * (1 - discPct / 100));
 }
 
-// ═══ LOCAL COUPON STORE (localStorage-backed, admin-managed) ═══
-// These default coupons are for demo; admin can manage them via the panel
-// In production, these would be stored in MongoDB via the backend
-let localCoupons = JSON.parse(localStorage.getItem('pfc_admin_coupons') || 'null') || [
+// ═══ COUPON STORE — MongoDB-backed via /api/admin/settings ═══
+// localCoupons is an in-memory mirror, populated from server on boot.
+// All writes go to MongoDB so Netlify + Cloudflare stay in sync.
+let localCoupons = [];
+
+// Default seed coupons (only used on very first boot before server responds)
+const _defaultCoupons = [
   { id:'c1', code:'WELCOME10', discountPercent:10, minOrder:0,    expiryDate:'2027-12-31', status:'active',   createdAt: new Date().toISOString() },
   { id:'c2', code:'FRUIT20',   discountPercent:20, minOrder:200,  expiryDate:'2027-12-31', status:'active',   createdAt: new Date().toISOString() },
   { id:'c3', code:'SUMMER50',  discountPercent:50, minOrder:500,  expiryDate:'2027-12-31', status:'active',   createdAt: new Date().toISOString() },
   { id:'c4', code:'MEGA90',    discountPercent:90, minOrder:1000, expiryDate:'2027-12-31', status:'inactive', createdAt: new Date().toISOString() },
 ];
+
+// Persist coupon list to MongoDB (all platforms read same data)
+async function saveCoupons() {
+  try {
+    await fetch(API + '/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ key: 'coupons', value: localCoupons }),
+    });
+    // Clean up old localStorage key so stale data is never served
+    try { localStorage.removeItem('pfc_admin_coupons'); } catch(_) {}
+  } catch(e) { console.warn('[PFC] Failed to save coupons to server:', e.message); }
+}
 
 // ═══ SMART UNIT OPTIONS PER FRUIT TYPE ═══
 const WEIGHT_UNITS = [
@@ -7316,7 +7355,6 @@ function cartItemPlus(i) {
 
 
 // ─── COUPON SYSTEM ────────────────────────────────────────
-function saveCoupons() { localStorage.setItem('pfc_admin_coupons', JSON.stringify(localCoupons)); }
 
 function applyCoupon() {
   const code = document.getElementById('couponInput').value.trim().toUpperCase();
@@ -7339,6 +7377,7 @@ function applyCoupon() {
   localStorage.setItem('pfc_coupon', JSON.stringify(coupon));
   renderCartDrawer();
   toast(coupon.discountPercent + '% off applied! Code: ' + code);
+  _launchCouponConfetti();
 }
 
 function removeCoupon() {
@@ -7430,6 +7469,7 @@ function applyCheckoutCoupon() {
   msg.textContent = '✅ ' + coupon.discountPercent + '% off — saving ₹' + getCouponDiscount(sub).toFixed(0) + '!';
   renderOrderSummary();
   toast('🏷️ Coupon applied — ' + coupon.discountPercent + '% off!');
+  _launchCouponConfetti();
 }
 function renderOrderSummary() {
   // Sync checkout coupon field with any coupon applied in cart
@@ -9953,7 +9993,7 @@ function switchAdminTab(tab) {
   const tabIsStale = (Date.now() - lastLoaded) > TAB_CACHE_TTL;
 
   if (tab === 'bundles') loadAdminBundles();        // MongoDB-backed
-  if (tab === 'overview') { initAdminControls(); renderAdminContactRows(); if (tabIsStale) { loadAdminOverview(); window._adminTabTs.overview = Date.now(); } }
+  if (tab === 'overview') { _resetAdminContactData(); initAdminControls(); renderAdminContactRows(); if (tabIsStale) { loadAdminOverview(); window._adminTabTs.overview = Date.now(); } }
   if (tab === 'fruits')  {
     // Debounce: ignore rapid repeated clicks (500ms window)
     const lastFruits = window._adminTabTs.fruits || 0;
@@ -10195,11 +10235,14 @@ async function saveInlinePrice(id) {
   const r = await PATCH('/fruits/' + id, { price });
   if (r.ok) {
     toast('Price updated to ₹' + price + '/kg');
-    // Update live price on cards without full reload
+    // Update live price in local cache immediately
     allFruits = allFruits.map(f => f._id === id ? {...f, price} : f);
+    try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
     const priceEl = document.getElementById('fp-' + id);
     if (priceEl) priceEl.textContent = '₹' + price;
-    loadAdminFruits();
+    _renderAdminFruitsFromData(allFruits,
+      (document.getElementById('adminFruitCat')?.value || ''),
+      (document.getElementById('adminFruitSearch')?.value || ''));
   } else toast(r.message || 'Price update failed.', 'error');
 }
 
@@ -10213,8 +10256,12 @@ async function saveInlineStock(id) {
     toast('Stock updated to ' + stock + ' kg');
     const idx = allFruits.findIndex(f => f._id === id);
     if (idx > -1) allFruits[idx].stock = stock;
+    try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
     if (stock === 0) syncCartWithCatalog(); // remove OOS items from cart
-    patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits(); loadAdminFruits();
+    patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits();
+    _renderAdminFruitsFromData(allFruits,
+      (document.getElementById('adminFruitCat')?.value || ''),
+      (document.getElementById('adminFruitSearch')?.value || ''));
   } else toast(r.message || 'Stock update failed.', 'error');
 }
 
@@ -10233,12 +10280,16 @@ async function toggleFruitVisibility(id, isCurrentlyAvailable) {
         // Update local cache immediately so cart also reflects
         const idx = allFruits.findIndex(f => f._id === id);
         if (idx > -1) allFruits[idx].isAvailable = !isCurrentlyAvailable;
+        try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
         if (isCurrentlyAvailable) {
           // Remove hidden fruit from cart
           cart = cart.filter(c => c.fid !== id);
           saveCart(); updateCartCount(); renderCartDrawer();
         }
-        patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits(); loadAdminFruits();
+        patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits();
+        _renderAdminFruitsFromData(allFruits,
+          (document.getElementById('adminFruitCat')?.value || ''),
+          (document.getElementById('adminFruitSearch')?.value || ''));
       } else toast((r.message || 'Update failed.'), 'error');
     },
     isCurrentlyAvailable ? '🙈' : '👁️'
@@ -10258,10 +10309,14 @@ async function markFruitOOS(id, currentStock) {
         toast('Marked as Out of Stock.');
         const idx = allFruits.findIndex(f => f._id === id);
         if (idx > -1) allFruits[idx].stock = 0;
+        try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
         // Remove OOS fruit from cart
         cart = cart.filter(c => c.fid !== id);
         saveCart(); updateCartCount(); renderCartDrawer();
-        patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits(); loadAdminFruits();
+        patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits();
+        _renderAdminFruitsFromData(allFruits,
+          (document.getElementById('adminFruitCat')?.value || ''),
+          (document.getElementById('adminFruitSearch')?.value || ''));
       } else {
         toast((r.message || 'Failed to mark OOS'), 'error');
       }
@@ -10597,6 +10652,7 @@ async function saveFruit() {
     toast(id ? 'Fruit updated' : 'Fruit added');
     closeFruitModal();
     invalidateFruitsCache();       // bust sessionStorage so CDN-fresh data loads
+    allFruits = [];                // clear in-memory cache so loadAdminFruits() hits server
     await loadFruits(true);        // force server fetch, skip cache
     syncCartWithCatalog(); // reflect price/availability changes in cart
     renderJuicesGrid();
@@ -11279,7 +11335,7 @@ function openEditCouponModal(id) {
 
 function closeCouponModal() { document.getElementById('couponModal').classList.remove('show'); }
 
-function saveCoupon() {
+async function saveCoupon() {
   const id       = document.getElementById('cm-id').value;
   const code     = document.getElementById('cm-code').value.trim().toUpperCase();
   const pct      = parseInt(document.getElementById('cm-pct').value);
@@ -11301,22 +11357,21 @@ function saveCoupon() {
     if (idx > -1) {
       localCoupons[idx] = { ...localCoupons[idx], code, discountPercent: pct, minOrder, expiryDate: expiry, status };
     }
-    toast('Coupon updated!');
   } else {
     // Create
     localCoupons.unshift({ id: 'c' + Date.now(), code, discountPercent: pct, minOrder, expiryDate: expiry, status, createdAt: new Date().toISOString() });
-    toast('Coupon created!');
   }
-  saveCoupons();
   closeCouponModal();
+  await saveCoupons();
+  toast(id ? 'Coupon updated & synced ✅' : 'Coupon created & synced ✅', 'success');
   loadCouponsPanel();
 }
 
-function toggleCoupon(id, currentStatus) {
+async function toggleCoupon(id, currentStatus) {
   const c = localCoupons.find(x => x.id === id);
   if (!c) return;
   c.status = currentStatus === 'active' ? 'inactive' : 'active';
-  saveCoupons();
+  await saveCoupons();
   loadCouponsPanel();
   toast('Coupon ' + (c.status === 'active' ? 'activated' : 'deactivated') + '.');
 }
@@ -11326,9 +11381,9 @@ function deleteCoupon(id) {
   showConfirmModal(
     'Delete Coupon',
     'Delete coupon <b>' + (c ? c.code : id) + '</b>? This cannot be undone.',
-    () => {
+    async () => {
       const idx = localCoupons.findIndex(x => x.id === id);
-      if (idx > -1) { localCoupons.splice(idx, 1); saveCoupons(); loadCouponsPanel(); toast('Coupon deleted.'); }
+      if (idx > -1) { localCoupons.splice(idx, 1); await saveCoupons(); loadCouponsPanel(); toast('Coupon deleted.'); }
     },
     '🗑️'
   );
@@ -14819,21 +14874,42 @@ async function savePlatformFee() {
   }
 }
 
-/* ── Load all settings from DB (platform fee + orderNow) ── */
+/* ── Load ALL settings from DB — runs on every page load, every platform ── */
+/* Covers: platformFee, orderNowEnabled, contactInfo, coupons              */
 async function loadPlatformFeeFromServer() {
   try {
     const resp = await fetch(API + '/settings/public?ts=' + Date.now());
     if (!resp.ok) return;
     const d = await resp.json();
     if (d.success && d.settings != null) {
+      // ── Platform fee ──
       if (d.settings.platformFee !== undefined) {
         _platformFeeCache = Number(d.settings.platformFee) || 0;
         const feeInput = document.getElementById('platformFeeInput');
         if (feeInput) feeInput.value = _platformFeeCache;
       }
+      // ── Order Now toggle ──
       if (d.settings.orderNowEnabled !== undefined) {
         _orderNowEnabled = d.settings.orderNowEnabled !== false && d.settings.orderNowEnabled !== 'false';
         syncAdminOrderNowUI(_orderNowEnabled);
+      }
+      // ── Contact info ── hydrate in-memory cache so ALL platforms show same contacts
+      if (Array.isArray(d.settings.contactInfo) && d.settings.contactInfo.length > 0) {
+        _contactsCache = d.settings.contactInfo;
+        renderContactInfo(); // re-render contact page with latest data
+      }
+      // ── Coupons ── hydrate localCoupons so customers can apply them on any platform
+      if (Array.isArray(d.settings.coupons)) {
+        localCoupons = d.settings.coupons;
+      } else if (localCoupons.length === 0) {
+        // First-ever boot: seed defaults, then save to MongoDB
+        localCoupons = JSON.parse(JSON.stringify(_defaultCoupons));
+        // Migrate any existing localStorage coupons
+        try {
+          const lsRaw = localStorage.getItem('pfc_admin_coupons');
+          if (lsRaw) { const ls = JSON.parse(lsRaw); if (ls && ls.length) localCoupons = ls; }
+        } catch(_) {}
+        saveCoupons(); // fire-and-forget: save to server so next load gets server data
       }
     }
   } catch(_) { /* retain in-memory values */ }
@@ -16951,6 +17027,63 @@ window.PFC_GPS = (function() {
     setTimeout(_patchPlaceOrder, 300);
   }
 })();
+
+/* ══════════════════════════════════════════════════════
+   COUPON CONFETTI — lightweight canvas burst
+   Called by applyCoupon() and applyCheckoutCoupon()
+══════════════════════════════════════════════════════ */
+function _launchCouponConfetti() {
+  var canvas = document.createElement('canvas');
+  canvas.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:99999';
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  document.body.appendChild(canvas);
+  var ctx = canvas.getContext('2d');
+  var colors = ['#F4A300','#1B4332','#52B788','#E07B00','#fff','#6B46C1','#22c55e','#f59e0b'];
+  var particles = [];
+  for (var i = 0; i < 120; i++) {
+    particles.push({
+      x: Math.random() * canvas.width,
+      y: -10 - Math.random() * 60,
+      vx: (Math.random() - 0.5) * 5,
+      vy: 2.5 + Math.random() * 4,
+      color: colors[Math.floor(Math.random() * colors.length)],
+      size: 5 + Math.random() * 7,
+      rot: Math.random() * Math.PI * 2,
+      rotV: (Math.random() - 0.5) * 0.2,
+      shape: Math.random() > 0.5 ? 'rect' : 'circle',
+      alpha: 1
+    });
+  }
+  var frame = 0;
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    particles.forEach(function(p) {
+      ctx.save();
+      ctx.globalAlpha = p.alpha;
+      ctx.fillStyle = p.color;
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.rot);
+      if (p.shape === 'rect') {
+        ctx.fillRect(-p.size / 2, -p.size / 4, p.size, p.size / 2);
+      } else {
+        ctx.beginPath();
+        ctx.arc(0, 0, p.size / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+      p.x  += p.vx;
+      p.y  += p.vy;
+      p.vy += 0.08;
+      p.rot += p.rotV;
+      if (frame > 40) p.alpha -= 0.018;
+    });
+    frame++;
+    if (frame < 120) requestAnimationFrame(draw);
+    else canvas.remove();
+  }
+  draw();
+}
 </script>
 
 </body>

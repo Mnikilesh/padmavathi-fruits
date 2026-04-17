@@ -1101,7 +1101,34 @@ async function route(method, path, event) {
     const totalKgOrdered=resolved.filter(i=>!i.isJuice).reduce((s,i)=>(s+(i.weightGrams/1000)*i.quantity),0);
     if (totalKgOrdered>100) return R.bad(`Order exceeds 100kg limit.`);
     const deliveryFee=subtotal>=300?0:40; // free delivery on orders ≥ ₹300
-    const totalAmount=parseFloat((subtotal+deliveryFee).toFixed(2));
+
+    // ── SERVER-SIDE COUPON VALIDATION ─────────────────────────────────────
+    // coupon code is optional — sent by frontend as body.coupon
+    let couponDiscount = 0;
+    let appliedCouponCode = null;
+    let appliedCouponId   = null;
+    if (body.coupon) {
+      const { Settings } = getModels();
+      const couponSetting = await Settings.findOne({ key: 'coupons' }).lean();
+      const coupons = Array.isArray(couponSetting?.value) ? couponSetting.value : [];
+      const now = new Date();
+      const coupon = coupons.find(c =>
+        c.code === String(body.coupon).trim().toUpperCase() &&
+        c.status === 'active' &&
+        (!c.expiryDate || new Date(c.expiryDate) >= now)
+      );
+      if (coupon) {
+        if (!coupon.minOrder || subtotal >= coupon.minOrder) {
+          couponDiscount = parseFloat((subtotal * coupon.discountPercent / 100).toFixed(2));
+          appliedCouponCode = coupon.code;
+          appliedCouponId   = coupon.id;
+        }
+        // If minOrder not met, silently ignore coupon (don't block order)
+      }
+      // Unknown or expired coupon — silently ignore (don't block order)
+    }
+
+    const totalAmount=parseFloat((subtotal + deliveryFee - couponDiscount).toFixed(2));
     const initialPaymentStatus=(paymentMethod==='upi'||paymentMethod==='razorpay')?'paid':'pending';
 
     // ── IDEMPOTENCY CHECK 2: time-window fallback (catches token-less retries) ──
@@ -1114,6 +1141,11 @@ async function route(method, path, event) {
       console.log(`[PFC] RECENT_DUPLICATE_PREVENTED userId:${auth.user._id} amount:${totalAmount} ip:${clientIP}`);
       return R.ok({ order: recent }, 'Recent duplicate order prevented.');
     }
+
+    // Build orderNotes — append coupon info if applied
+    const couponNote = appliedCouponCode
+      ? ` [Coupon: ${appliedCouponCode} -₹${couponDiscount.toFixed(0)}]` : '';
+    const finalOrderNotes = (orderNotes || '') + couponNote;
 
     const order=await Order.create({
       user:auth.user._id, customerName, customerPhone, customerEmail:auth.user.email,
@@ -1128,7 +1160,7 @@ async function route(method, path, event) {
         lng: hasGPS ? +deliveryAddress.lng : null,
         mapsUrl: deliveryAddress.mapsUrl || (hasGPS ? `https://maps.google.com/?q=${deliveryAddress.lat},${deliveryAddress.lng}` : ''),
       },
-      orderNotes, subtotal, deliveryFee, totalAmount, paymentMethod,
+      orderNotes: finalOrderNotes, subtotal, deliveryFee, totalAmount, paymentMethod,
       paymentStatus:initialPaymentStatus,
       statusHistory:[{status:'placed'}],
       estimatedDelivery:new Date(Date.now()+24*36e5),
@@ -1138,6 +1170,23 @@ async function route(method, path, event) {
       if (it.isJuice) continue;
       const deductKg=(it.weightGrams/1000)*it.quantity;
       await Fruit.findByIdAndUpdate(it.fruit,{$inc:{stock:-deductKg,totalSold:deductKg}});
+    }
+
+    // ── UPDATE COUPON USAGE STATS in MongoDB ───────────────────
+    if (appliedCouponId && couponDiscount > 0) {
+      try {
+        const { Settings } = getModels();
+        const couponSetting = await Settings.findOne({ key: 'coupons' });
+        if (couponSetting && Array.isArray(couponSetting.value)) {
+          const idx = couponSetting.value.findIndex(c => c.id === appliedCouponId);
+          if (idx > -1) {
+            couponSetting.value[idx].usageCount    = (couponSetting.value[idx].usageCount    || 0) + 1;
+            couponSetting.value[idx].totalDiscount = (couponSetting.value[idx].totalDiscount || 0) + couponDiscount;
+            couponSetting.markModified('value');
+            await couponSetting.save();
+          }
+        }
+      } catch(e) { console.warn('[PFC] Coupon usage update failed:', e.message); }
     }
     const itemSummary=resolved.slice(0,3).map(i=>`${i.emoji||'🍎'} ${i.name}`).join(', ');
     const pushTitle = `🛒 New Order — ₹${totalAmount.toFixed(0)}`;
@@ -1152,8 +1201,8 @@ async function route(method, path, event) {
       `${customerName} · Tap to accept`,
       { url:'/?page=driver', orderId:order.orderId }
     ).catch(()=>{});
-    console.log(`[PFC] ORDER_CREATED orderId:${order.orderId} orderToken:${orderToken} userId:${auth.user._id} ip:${clientIP} amount:${totalAmount}`);
-    return R.created({order},'Order placed! 🎉');
+    console.log(`[PFC] ORDER_CREATED orderId:${order.orderId} orderToken:${orderToken} userId:${auth.user._id} ip:${clientIP} amount:${totalAmount}${appliedCouponCode?' coupon:'+appliedCouponCode+' discount:'+couponDiscount:''}`);
+    return R.created({ order, couponDiscount, appliedCoupon: appliedCouponCode }, 'Order placed! 🎉');
   }
 
   if (method==='GET' && path==='/api/orders/my') {
