@@ -15316,21 +15316,49 @@ async function init() {
   // Every 5 seconds: fetch juices + baskets (fruit catalog uses its own
   // visibilitychange strategy above). ?ts= busts CDN/browser cache.
   let _rtPollTimer = null;
+  let _rtFruitsTick = 0;  // fruits polled every 3rd tick (~15s) to avoid excess calls
   function _startRealTimePolling() {
     if (_rtPollTimer) return;
     _rtPollTimer = setInterval(async () => {
       try {
-        const [jr, br] = await Promise.all([
-          fetch(API + '/juices?ts=' + Date.now()).then(r => r.ok ? r.json() : null),
-          fetch(API + '/baskets?ts=' + Date.now()).then(r => r.ok ? r.json() : null),
-        ]);
+        _rtFruitsTick++;
+        const ts = Date.now();
+        const fetches = [
+          fetch(API + '/juices?ts=' + ts).then(r => r.ok ? r.json() : null),
+          fetch(API + '/baskets?ts=' + ts).then(r => r.ok ? r.json() : null),
+        ];
+        // Refresh fruit catalog every 3rd tick (~15s) — picks up admin price/stock changes
+        if (_rtFruitsTick % 3 === 0) {
+          fetches.push(
+            fetch(API + '/fruits?limit=100&ts=' + ts, {
+              headers: { 'Cache-Control': 'no-cache' }
+            }).then(r => r.ok ? r.json() : null)
+          );
+        } else {
+          fetches.push(Promise.resolve(null));
+        }
+        const [jr, br, fr] = await Promise.all(fetches);
         if (jr?.success && Array.isArray(jr.juices)) {
           localJuices = jr.juices.map(_normalizeJuice);
           renderJuicesGrid();
+          if (document.getElementById('jAdminTable')) loadJuicesAdminPanel();
         }
         if (br?.success && Array.isArray(br.baskets)) {
           _localBaskets = br.baskets.map(_normalizeBasket);
           renderBundlesPage();
+        }
+        if (fr?.success && Array.isArray(fr.fruits) && fr.fruits.length > 0) {
+          allFruits = fr.fruits;
+          try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
+          renderShopFruits(allFruits);
+          renderHomeFruits();
+          syncCartWithCatalog();
+          // Refresh admin fruit table if currently open
+          if (document.getElementById('adminFruitsTableBody') || document.getElementById('adminFruitList')) {
+            _renderAdminFruitsFromData(allFruits,
+              (document.getElementById('adminFruitCat')?.value || ''),
+              (document.getElementById('adminFruitSearch')?.value || ''));
+          }
         }
       } catch(_) { /* network blip — skip tick */ }
     }, 5000);

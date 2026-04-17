@@ -988,7 +988,27 @@ async function route(method, path, event) {
     if (auth.user.role!=='admin') return R.noauth('Admin only.');
     const id = path.split('/').pop();
     try {
-      const { fileBuffer, fileMime, fields } = await parseMultipartUpload(event);
+      const contentType = (event.headers['content-type'] || event.headers['Content-Type'] || '');
+      const isJson = contentType.includes('application/json') || (!contentType.includes('multipart/form-data') && body && Object.keys(body).length > 0);
+
+      let fields, fileBuffer = null, fileMime = '';
+      if (isJson) {
+        // JSON body — inline price/stock/visibility edits from admin panel
+        fields = { ...body };
+        // Coerce array/object fields that come pre-parsed from JSON
+        if (Array.isArray(fields.benefits))    fields.benefits    = JSON.stringify(fields.benefits);
+        if (Array.isArray(fields.customUnits)) fields.customUnits = JSON.stringify(fields.customUnits);
+        if (typeof fields.origin === 'object' && fields.origin !== null) fields.origin = JSON.stringify(fields.origin);
+        if (Array.isArray(fields.fruit_images)) fields.fruit_images = JSON.stringify(fields.fruit_images);
+        // Normalise booleans sent as real booleans (not strings)
+        if (typeof fields.isFeatured === 'boolean') fields.isFeatured = String(fields.isFeatured);
+        if (typeof fields.isAvailable === 'boolean') fields.isAvailable = String(fields.isAvailable);
+      } else {
+        // Multipart — full edit form with optional image upload
+        const parsed = await parseMultipartUpload(event);
+        fields = parsed.fields; fileBuffer = parsed.fileBuffer; fileMime = parsed.fileMime;
+      }
+
       let imageUrl = fields.imageUrl || undefined;
       if (fileBuffer && fileBuffer.length > 0) {
         if (!['image/jpeg','image/png','image/webp'].includes(fileMime)) return R.bad('Images only (jpg/png/webp).');
@@ -1006,16 +1026,16 @@ async function route(method, path, event) {
       if (fields.stock !== undefined)           up.stock = Number(fields.stock);
       if (fields.discountPercent !== undefined) up.discountPercent = Number(fields.discountPercent);
       if (fields.description !== undefined)     up.description = fields.description;
-      if (fields.benefits !== undefined)        { try { up.benefits = JSON.parse(fields.benefits); } catch(_) {} }
+      if (fields.benefits !== undefined)        { try { up.benefits = typeof fields.benefits === 'string' ? JSON.parse(fields.benefits) : fields.benefits; } catch(_) {} }
       if (fields.unitType !== undefined)        up.unitType = fields.unitType;
-      if (fields.customUnits !== undefined)     { try { up.customUnits = JSON.parse(fields.customUnits); } catch(_) {} }
+      if (fields.customUnits !== undefined)     { try { up.customUnits = typeof fields.customUnits === 'string' ? JSON.parse(fields.customUnits) : fields.customUnits; } catch(_) {} }
       if (fields.badge !== undefined)           up.badge = fields.badge;
       if (fields.badgeLabel !== undefined)      up.badgeLabel = fields.badgeLabel;
-      if (fields.isFeatured !== undefined)      up.isFeatured = fields.isFeatured === 'true';
-      if (fields.isAvailable !== undefined)     up.isAvailable = fields.isAvailable !== 'false';
+      if (fields.isFeatured !== undefined)      up.isFeatured = fields.isFeatured === 'true' || fields.isFeatured === true;
+      if (fields.isAvailable !== undefined)     up.isAvailable = fields.isAvailable !== 'false' && fields.isAvailable !== false;
       if (fields.lowStockThreshold !== undefined) up.lowStockThreshold = Number(fields.lowStockThreshold);
-      if (fields.origin !== undefined)          { try { up.origin = JSON.parse(fields.origin); } catch(_) {} }
-      if (fields.fruit_images !== undefined)    { try { up.fruit_images = JSON.parse(fields.fruit_images); } catch(_) {} }
+      if (fields.origin !== undefined)          { try { up.origin = typeof fields.origin === 'string' ? JSON.parse(fields.origin) : fields.origin; } catch(_) {} }
+      if (fields.fruit_images !== undefined)    { try { up.fruit_images = typeof fields.fruit_images === 'string' ? JSON.parse(fields.fruit_images) : fields.fruit_images; } catch(_) {} }
       if (imageUrl)                             up.imageUrl = imageUrl;
       const fruit = await Fruit.findByIdAndUpdate(id, { $set: up }, { new: true, runValidators: true });
       if (!fruit) return R.nf('Fruit not found.');
