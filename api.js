@@ -424,24 +424,44 @@ const offlineSaleSchema = new mongoose.Schema({
 
 // ─── RATE LIMITER (Task 10) ──────────────────────────────────
 // Per-IP: max 100 requests per 15 minutes — in-memory, free-tier safe
+// ── Route-aware rate limiter ─────────────────────────────────
+// Bucket key = `${ip}:${bucketName}` — each bucket has its own window/max.
+// Auth routes get a tight 20 req/min to prevent brute-force.
+// Public data gets 200 req/15 min (generous for normal browsing).
+// Everything else gets 100 req/15 min.
 const _rlMap = new Map();
-const RL_WINDOW = 15 * 60 * 1000; // 15 min
-const RL_MAX    = 100;
 
-function rateLimit(ip) {
+function _rlCheck(key, max, windowMs) {
   const now = Date.now();
-  if (!_rlMap.has(ip)) _rlMap.set(ip, []);
-  const reqs = _rlMap.get(ip).filter(t => now - t < RL_WINDOW);
-  if (reqs.length >= RL_MAX) return false;
+  if (!_rlMap.has(key)) _rlMap.set(key, []);
+  const reqs = _rlMap.get(key).filter(t => now - t < windowMs);
+  if (reqs.length >= max) return false;
   reqs.push(now);
-  _rlMap.set(ip, reqs);
-  // Prune map to avoid unbounded growth — remove stale IPs every 500 entries
-  if (_rlMap.size > 500) {
+  _rlMap.set(key, reqs);
+  // Prune stale entries to prevent unbounded growth
+  if (_rlMap.size > 1000) {
     for (const [k, v] of _rlMap) {
-      if (!v.some(t => now - t < RL_WINDOW)) _rlMap.delete(k);
+      if (!v.length) _rlMap.delete(k);
     }
   }
   return true;
+}
+
+function rateLimit(ip, path) {
+  // Auth routes — tight window to stop brute-force / OTP spam
+  if (path.startsWith('/api/auth/')) {
+    return _rlCheck(ip + ':auth', 20, 60 * 1000);
+  }
+  // Public product data — generous limit for legitimate browsing
+  if (
+    path.startsWith('/api/juices') ||
+    path.startsWith('/api/baskets') ||
+    path.startsWith('/api/fruits')
+  ) {
+    return _rlCheck(ip + ':public', 200, 15 * 60 * 1000);
+  }
+  // All other routes (orders, admin, driver, etc.)
+  return _rlCheck(ip + ':general', 100, 15 * 60 * 1000);
 }
 
 function getIP(event) {
@@ -755,10 +775,10 @@ async function route(method, path, event) {
   try { if (event.body) body=sanitize(JSON.parse(event.body)); } catch(_) {}
   const q = event.queryStringParameters || {};
 
-  // ── RATE LIMIT: 100 req / 15 min per IP ───────────────────────
+  // ── RATE LIMIT: route-aware per-IP limits ─────────────────────
   const clientIP = getIP(event);
-  if (!rateLimit(clientIP)) {
-    return R.json({ success: false, message: 'Too many requests. Please slow down.' }, 429);
+  if (!rateLimit(clientIP, path)) {
+    return R.json({ success: false, message: 'Too many requests. Please wait a few seconds and try again.' }, 429);
   }
   
 

@@ -5344,6 +5344,14 @@ async function http(method, path, body, skipAuth, skipGuard) {
       const ok = await doRefresh();
       if (ok) return http(method, path, body, false);
     }
+    // 429 — Too Many Requests: log and signal caller to back off
+    if (r.status === 429) {
+      console.warn('[PFC] 429 Too Many Requests on', path, '— backing off 10s');
+      if (!skipGuard) {
+        // Pause foreground calls for 10 s to let the server-side window drain
+        await new Promise(res => setTimeout(res, 10000));
+      }
+    }
     return { ok: r.ok, status: r.status, ...d };
   } catch (e) {
     clearTimeout(timeoutId);
@@ -5352,13 +5360,24 @@ async function http(method, path, body, skipAuth, skipGuard) {
     return { ok: false, status: 0, message: isTimeout ? 'Request timed out. Please check your connection and try again.' : 'Cannot reach server. Make sure node server.js is running.' };
   }
 }
+// ── In-flight deduplication for background polling ──────────
+// If a POLL for the same path is already in-flight (e.g. slow connection + fast
+// interval), return the existing Promise instead of firing a duplicate request.
+const _pollFlight = new Map();
+function _dedupedPoll(path) {
+  if (_pollFlight.has(path)) return _pollFlight.get(path);
+  const p = http('GET', path, null, false, true).finally(() => _pollFlight.delete(path));
+  _pollFlight.set(path, p);
+  return p;
+}
+
 const GET   = p     => http('GET',    p, null, false, false);
 const POST  = (p,b) => http('POST',   p, b,    false, false);
 const PATCH = (p,b) => http('PATCH',  p, b,    false, false);
 const PUT   = (p,b) => http('PUT',    p, b,    false, false);
 const DEL   = p     => http('DELETE', p, {},   false, false); // {} body ensures token is always sent
 // Background / polling calls — never count toward daily API cap
-const POLL  = p     => http('GET',    p, null, false, true);
+const POLL  = p     => _dedupedPoll(p);
 const POLLPOST = (p,b) => http('POST', p, b,   false, true);
 
 async function doRefresh() {
