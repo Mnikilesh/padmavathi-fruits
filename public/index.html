@@ -14741,7 +14741,7 @@ async function doForgotPassword() {
     document.getElementById('forgotErr').textContent = msg;
     // If user not found — guide them to register
     if (msg.toLowerCase().includes('register') || msg.toLowerCase().includes('no account')) {
-      document.getElementById('forgotErr').innerHTML = msg + ' &mdash; <a href="#" onclick="switchAuthTab('register');document.getElementById('forgotForm').style.display='none';document.getElementById('registerForm').style.display='';return false;" style="color:var(--g);text-decoration:underline">Create an account</a>';
+      document.getElementById('forgotErr').innerHTML = msg + ' &mdash; <a href="#" onclick="switchAuthTab(&apos;register&apos;);document.getElementById(&apos;forgotForm&apos;).style.display=&apos;none&apos;;document.getElementById(&apos;registerForm&apos;).style.display=&apos;&apos;;return false;" style="color:var(--g);text-decoration:underline">Create an account</a>';
     }
   }
 }
