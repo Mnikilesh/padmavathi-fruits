@@ -143,8 +143,7 @@ async function sendOtpEmail(toEmail, otp) {
         '',
         '— Padmavathi Fruits Company',
         'padmavathifruits.in',
-      ].join('
-'),
+      ].join(''),
     });
     console.log('[PFC] OTP_EMAIL_SENT to:' + toEmail + ' messageId:' + info.messageId);
     return { sent: true };
