@@ -3806,7 +3806,7 @@ body.on-admin   #floatingCartBar { display: none !important; }
           <!-- Delivery info badge -->
           <div class="co-delivery-note">
             <span>🚚</span>
-            <span>Free delivery on orders ≥ ₹300 · else ₹40</span>
+            <span>Free delivery on orders ≥ ₹800 · Warangal ₹40 · Hanamkonda ₹50 · Kazipet ₹60</span>
           </div>
 
           <button class="btn-place" id="placeBtn" onclick="placeOrder()">
@@ -5644,6 +5644,35 @@ function invalidateFruitsCache() {
   try { sessionStorage.removeItem('pfc_fruits_cache'); } catch(_) {}
 }
 
+// ── Cross-tab catalog sync ───────────────────────────────────
+// When admin adds/edits/deletes a fruit, broadcast to all open tabs
+// so the shop refreshes automatically without losing cart/page state.
+(function() {
+  try {
+    const _bc = new BroadcastChannel('pfc_catalog');
+    window._pfcCatalogBC = _bc;
+    _bc.onmessage = function(e) {
+      if (e.data === 'updated') {
+        // Only reload catalog data — don't navigate or lose progress
+        invalidateFruitsCache();
+        if (typeof loadFruits === 'function') {
+          loadFruits(true).then(function() {
+            if (typeof syncCartWithCatalog === 'function') syncCartWithCatalog();
+            if (typeof renderShopFruits === 'function') renderShopFruits(allFruits);
+            if (typeof renderHomeFruits === 'function') renderHomeFruits();
+            if (typeof renderBulkPanel === 'function') renderBulkPanel();
+            if (typeof renderJuicesGrid === 'function') renderJuicesGrid();
+          }).catch(function(){});
+        }
+      }
+    };
+  } catch(_) {}
+})();
+
+function broadcastCatalogUpdate() {
+  try { window._pfcCatalogBC && window._pfcCatalogBC.postMessage('updated'); } catch(_) {}
+}
+
 // Patch a single fruit in the local allFruits array without a server roundtrip
 function patchLocalFruit(updatedFruit) {
   if (!updatedFruit || !updatedFruit._id) return;
@@ -6856,6 +6885,7 @@ function validatePhone(raw) {
 function syncCartWithCatalog(silent) {
   const before = cart.length;
   const removed = [];
+  const priceUpdated = [];
   cart = cart.filter(c => {
     if (c.isJuice) {
       const j = localJuices.find(x => x.id === c.fid);
@@ -6870,8 +6900,25 @@ function syncCartWithCatalog(silent) {
     const f = allFruits.find(x => x._id === c.fid);
     if (!f || !f.isAvailable || f.isDeleted) { removed.push(c.name); return false; }
     if (f.stock <= 0) { removed.push(c.name); return false; }
+    // ── Refresh price from catalog so displayed total stays accurate ──
+    // This does NOT affect the server — the server always recomputes from DB.
+    // It prevents the user from seeing a stale total in the cart drawer.
+    const freshPrice = f.discountPercent > 0
+      ? parseFloat((f.price * (1 - f.discountPercent / 100)).toFixed(2))
+      : f.price;
+    if (c.unitPrice !== undefined && Math.abs(freshPrice - c.unitPrice) > 0.01) {
+      priceUpdated.push(c.name);
+      c.unitPrice = freshPrice;
+      c.pricePerKg = freshPrice;
+      // Recalculate displayed subtotal for this cart item
+      c.price = parseFloat((freshPrice * (c.totalGrams || 500) / 1000).toFixed(2));
+    }
     return true;
   });
+  if (priceUpdated.length) {
+    saveCart(); updateCartCount();
+    if (!silent) toast('💰 Prices updated for: ' + priceUpdated.join(', ') + '. Review before checkout.', 'error');
+  }
   if (removed.length) {
     saveCart(); updateCartCount(); renderCartDrawer();
     if (!silent) toast('🛒 Cart updated: ' + removed.join(', ') + ' removed (unavailable).', 'error');
@@ -7112,11 +7159,24 @@ function closeCart() { document.getElementById('overlay').classList.remove('show
 function getCartSubtotal() { return cart.reduce((a, c) => a + c.price, 0); }
 
 // Free delivery when total fruit weight >= 5kg
-function calcDeliveryFee(cartItems) {
+function getDeliveryFeeByCity(city) {
+  const c = (city || '').toLowerCase().trim();
+  if (c.includes('kazipet') || c.includes('kzp'))    return 60;
+  if (c.includes('hanamkonda') || c.includes('hnk') || c.includes('hanmakonda') || c.includes('hanmkonda')) return 50;
+  return 40; // Warangal and default
+}
+
+function calcDeliveryFee(cartItems, city) {
   const items    = cartItems || cart;
   const subtotal = items.reduce((s, c) => s + (c.price || 0), 0);
   const discount = typeof getCouponDiscount === 'function' ? getCouponDiscount(subtotal) : 0;
-  return (subtotal - discount) >= 300 ? 0 : 40;
+  const FREE_THRESHOLD = 800;
+  if ((subtotal - discount) >= FREE_THRESHOLD) return 0;
+  // Get city from argument or from checkout form
+  const resolvedCity = city
+    || (typeof document !== 'undefined' && document.getElementById('co-city')?.value.trim())
+    || 'Warangal';
+  return getDeliveryFeeByCity(resolvedCity);
 }
 
 function getCouponDiscount(subtotal) {
@@ -7133,7 +7193,7 @@ function renderCartDrawer() {
   }
   const totalW = totalCartWeightGrams();
   const sub_ = getCartSubtotal();
-  const FREE_DEL_THRESHOLD = 300;
+  const FREE_DEL_THRESHOLD = 800;
   const remaining = Math.max(0, FREE_DEL_THRESHOLD - sub_);
   const pct = Math.min(100, (sub_ / FREE_DEL_THRESHOLD) * 100);
   const warnHtml = sub_ < FREE_DEL_THRESHOLD
@@ -7779,6 +7839,48 @@ async function placeOrder() {
     return;
   }
 
+
+  // ── PRE-CHECKOUT PRICE & STOCK REFRESH ──────────────────────────────────────
+  // Force-fetch the latest catalog before building the payload.
+  // If any price changed, abort and warn the user rather than proceeding silently.
+  try {
+    const freshFr = await GET('/fruits?limit=100&ts=' + Date.now());
+    if (freshFr.ok && Array.isArray(freshFr.fruits) && freshFr.fruits.length > 0) {
+      const priceChanged = fruitItems.some(c => {
+        const fresh = freshFr.fruits.find(f => f._id === (c.fruit || c.fid));
+        if (!fresh) return false;
+        const freshPrice = fresh.discountPercent > 0
+          ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
+          : fresh.price;
+        return Math.abs(freshPrice - (c.unitPrice || c.pricePerKg || 0)) > 0.01;
+      });
+      allFruits = freshFr.fruits;
+      try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
+      renderShopFruits(allFruits); renderHomeFruits();
+      if (priceChanged) {
+        btn.textContent = 'Place Order'; btn.disabled = false;
+        toast('⚠️ Prices updated — please review your cart before confirming.', 'error');
+        syncCartWithCatalog(); renderCart(); showPage('cart');
+        return;
+      }
+      for (const c of fruitItems) {
+        const fresh = allFruits.find(f => f._id === (c.fruit || c.fid));
+        if (!fresh) continue;
+        const reqKg = (c.totalGrams || 500) / 1000;
+        if (fresh.stock <= 0) {
+          btn.textContent = 'Place Order'; btn.disabled = false;
+          toast(c.name + ' is now out of stock. Please update your cart.', 'error');
+          syncCartWithCatalog(); renderCart(); showPage('cart'); return;
+        }
+        if (reqKg > fresh.stock) {
+          btn.textContent = 'Place Order'; btn.disabled = false;
+          toast('Only ' + fresh.stock + 'kg of ' + c.name + ' available. Adjust your cart.', 'error');
+          syncCartWithCatalog(); renderCart(); showPage('cart'); return;
+        }
+      }
+    }
+  } catch(_) { /* network blip — let server validate */ }
+
   // ── Send to server (fruit items go to DB → admin + driver tabs) ──
   const juiceNote = juiceItems.length
     ? ' [Juices: ' + juiceItems.map(j => j.name + ' x' + j.qty).join(', ') + ']' : '';
@@ -7790,7 +7892,7 @@ async function placeOrder() {
       quantity:       1,
       name:           c.name,
       isJuice:        false,
-      clientSubtotal: parseFloat((c.price || 0).toFixed(2)),
+      // clientSubtotal intentionally removed — server always recalculates from DB price
       fixedPrice:     c.fixedPrice || null,
     })),
     customerName:    name,
@@ -7858,6 +7960,21 @@ async function placeOrder() {
     const r = await POST('/orders', payload);
 
     if (r.ok && r.order) {
+      // ── PRICE CONFIRMATION: compare server total vs displayed total ────────────────────
+      // Server always recomputes from DB prices. Inform user if amount changed.
+      if (r.confirmedTotal !== undefined) {
+        const _displayedTotal = _total;
+        const _diff = Math.abs(r.confirmedTotal - _displayedTotal);
+        if (_diff > 0.5) {
+          toast(
+            '✅ Order confirmed at ₹' + r.confirmedTotal.toFixed(0) +
+            (r.confirmedTotal < _displayedTotal
+              ? ' (₹' + (_displayedTotal - r.confirmedTotal).toFixed(0) + ' less — prices were updated!)'
+              : ' (price adjusted to ₹' + r.confirmedTotal.toFixed(0) + ')'),
+            _diff > 5 ? 'error' : 'success'
+          );
+        }
+      }
       // ✅ Server saved it (new or duplicate-prevented) — show success
       await resetCartAndSuccess(r.order.orderId);
       // btn stays disabled — page transitions to success, no re-enable needed
@@ -9868,16 +9985,18 @@ async function loadMyOrders() {
     const orderAge    = Date.now() - new Date(o.createdAt).getTime();
     const canCancel   = (o.status === 'placed' || o.status === 'confirmed') && orderAge < 60000;
     const itemsJson   = isDelivered ? encodeURIComponent(JSON.stringify(o.items.map(i => ({id: i.isJuice ? i.juiceId : i.fruit, name: i.name, isJuice: !!i.isJuice})))) : '';
-    const itemsList = o.items.map(i =>
-      '<div class="oc-item-row">' +
+    const itemsList = o.items.map(i => {
+      // For bulk orders, item subtotals are 0 (price confirmed later) — hide price column
+      const showPrice = !o._bulk;
+      return '<div class="oc-item-row">' +
         '<div class="oc-item-name">' +
           (i.emoji ? '<span>' + i.emoji + '</span>' : '') +
           '<span>' + i.name + '</span>' +
           '<span class="oc-item-weight">' + (i.weightLabel || (i.weightGrams||0)+'g') + '</span>' +
         '</div>' +
-        '<div class="oc-item-price">&#8377;' + (i.subtotal||0).toFixed(0) + '</div>' +
-      '</div>'
-    ).join('');
+        (showPrice ? '<div class="oc-item-price">&#8377;' + (i.subtotal||0).toFixed(0) + '</div>' : '') +
+      '</div>';
+    }).join('');
     // Payment status derivation
     const pm_ = (o.paymentMethod||'').toLowerCase();
     let ps_ = o.paymentStatus||'pending';
@@ -9907,10 +10026,27 @@ async function loadMyOrders() {
       // ── Footer ────────────────────────────────────────
       '<div class="oc-footer">' +
         '<div class="oc-footer-left">' +
-          '<div class="oc-total">&#8377;' + o.totalAmount.toFixed(0) + '</div>' +
-          '<div class="oc-meta">' + (o.paymentMethod||'').toUpperCase() + ' &nbsp;·&nbsp; <span style="background:' + psCls + ';padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">' + psLabel + '</span>' +
-            (o.deliveryFee > 0 ? ' &nbsp;·&nbsp; Delivery ₹' + o.deliveryFee : ' &nbsp;·&nbsp; Free delivery') +
-          '</div>' +
+          (o._bulk
+            ? (() => {
+                // Compute retail estimate from allFruits for bulk orders
+                const estTotal = o.items.reduce((sum, it) => {
+                  const f = (typeof allFruits !== 'undefined' ? allFruits : []).find(x => x.name === it.name);
+                  if (!f) return sum;
+                  const ep = f.discountPercent > 0 ? f.price*(1-f.discountPercent/100) : f.price;
+                  const wl = it.weightLabel || '';
+                  const kgMatch = wl.match(/([\d.]+)\s*kg/i);
+                  const gMatch  = wl.match(/([\d.]+)\s*g/i);
+                  const kg = kgMatch ? parseFloat(kgMatch[1]) : gMatch ? parseFloat(gMatch[1])/1000 : 0;
+                  return sum + ep * kg;
+                }, 0);
+                return '<div class="oc-total" style="font-size:13px">~&#8377;' + (estTotal > 0 ? estTotal.toFixed(0) : '—') + ' <span style="font-size:10px;font-weight:500;color:var(--muted)">(retail est.)</span></div>' +
+                  '<div class="oc-meta" style="color:var(--muted);font-size:11px">Wholesale price confirmed within 2 hrs</div>';
+              })()
+            : '<div class="oc-total">&#8377;' + o.totalAmount.toFixed(0) + '</div>' +
+              '<div class="oc-meta">' + (o.paymentMethod||'').toUpperCase() + ' &nbsp;·&nbsp; <span style="background:' + psCls + ';padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">' + psLabel + '</span>' +
+                (o.deliveryFee > 0 ? ' &nbsp;·&nbsp; Delivery ₹' + o.deliveryFee : ' &nbsp;·&nbsp; Free delivery') +
+              '</div>'
+          ) +
         '</div>' +
         '<div class="oc-actions">' +
           renderCancelBtn(o, canCancel, orderAge) +
@@ -10657,6 +10793,7 @@ async function saveFruit() {
     syncCartWithCatalog(); // reflect price/availability changes in cart
     renderJuicesGrid();
     loadAdminFruits();
+    broadcastCatalogUpdate(); // notify other open tabs
   } else {
     document.getElementById('fruitErr').textContent = r.message || 'Failed to save.';
   }
@@ -13650,7 +13787,7 @@ function renderBulkPanel() {
 
 async function adminBulkToggle(id, makeVisible) {
   const r = await PATCH('/fruits/' + id, { isAvailable: makeVisible });
-  if (r.ok) { patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits(); renderBulkPanel(); loadAdminFruits(); }
+  if (r.ok) { patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits(); renderBulkPanel(); loadAdminFruits(); broadcastCatalogUpdate(); }
   else toast('Failed to update.', 'error');
 }
 
@@ -13663,7 +13800,7 @@ async function adminBulkDelete(id, name) {
       const d = await r.json().catch(() => ({}));
       if (r.ok) {
         toast(name + ' deleted.');
-        removeLocalFruit(id); invalidateFruitsCache(); renderShopFruits(allFruits); renderHomeFruits(); renderBulkPanel(); loadAdminFruits();
+        removeLocalFruit(id); invalidateFruitsCache(); renderShopFruits(allFruits); renderHomeFruits(); renderBulkPanel(); loadAdminFruits(); broadcastCatalogUpdate();
       } else toast(d.message || 'Delete failed.', 'error');
     },
     '🗑️'
@@ -14327,7 +14464,7 @@ async function btabOrders() {
 
 function updateBtab(page) {
   document.querySelectorAll('.btab').forEach(b => b.classList.remove('active'));
-  const map = { home:'btab-home', shop:'btab-shop', profile:'btab-profile', bundles:'btab-shop' };
+  const map = { home:'btab-home', shop:'btab-shop', profile:'btab-profile', bundles:'btab-shop', contact:'btab-contact' };
   const id = map[page];
   if (id) document.getElementById(id)?.classList.add('active');
 }
@@ -15361,7 +15498,7 @@ async function init() {
           }
         }
       } catch(_) { /* network blip — skip tick */ }
-    }, 5000);
+    }, 30000); // ── min 30s — was 5s (request spam fix)
   }
 
   // Pause polling when tab is hidden, resume on return
@@ -15973,9 +16110,9 @@ function togglePwEye(id) {
       </svg>
       Basket
     </button>
-    <button class="btab" id="btab-orders" onclick="btabOrders()">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
-      Orders
+    <button class="btab" id="btab-contact" onclick="btabNav('contact')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81 19.79 19.79 0 01.01 1.18 2 2 0 012 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92z"/></svg>
+      Contact
     </button>
     <button class="btab" id="btab-profile" onclick="btabNav('profile')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>

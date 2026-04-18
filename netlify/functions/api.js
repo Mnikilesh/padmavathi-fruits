@@ -207,6 +207,55 @@ const pushSubSchema = new mongoose.Schema({
   ts:           { type:Number, default:Date.now },
 }, { timestamps:true });
 
+// ── Settings: key/value store for admin config (platform fee, order-now toggle, etc.)
+// Stored in MongoDB so all platforms (Render, Netlify, Cloudflare) read the same values.
+const settingsSchema = new mongoose.Schema({
+  key:   { type:String, required:true, unique:true },
+  value: { type:mongoose.Schema.Types.Mixed },
+}, { timestamps:true });
+
+// ── Juice schema ─────────────────────────────────────────────
+const juiceSchema = new mongoose.Schema({
+  name:            { type:String, required:true, trim:true },
+  desc:            String,
+  img:             String,
+  img2:            String,
+  price:           { type:Number, required:true, min:1 },
+  discountPercent: { type:Number, default:0, min:0, max:90 },
+  moo:             { type:Number, default:500 },   // minimum order ml
+  category:        { type:String, default:'Fresh' },
+  status:          { type:String, enum:['available','soon'], default:'soon' },
+  stock:           { type:Number, default:0 },     // litres
+  benefits:        [String],
+  isDeleted:       { type:Boolean, default:false },
+}, { timestamps:true });
+
+// ── Basket / Bundle schema ────────────────────────────────────
+const basketSchema = new mongoose.Schema({
+  name:      { type:String, required:true, trim:true },
+  desc:      String,
+  emoji:     { type:String, default:'🎁' },
+  price:     { type:Number, required:true },
+  origPrice: Number,
+  items:     String,   // display string e.g. "Apple 1kg, Mango 500g"
+  badge:     String,
+  active:    { type:Boolean, default:true },
+  isDeleted: { type:Boolean, default:false },
+}, { timestamps:true });
+
+// ── Offline Sale schema ───────────────────────────────────────
+const offlineSaleSchema = new mongoose.Schema({
+  saleId:      { type:String, unique:true, default:()=>'OS-'+Math.floor(10000+Math.random()*90000) },
+  name:        { type:String, default:'Walk-in' },
+  phone:       String,
+  items:       String,
+  itemsDetail: [{ item:String, qty:Number, unit:String, price:Number }],
+  amount:      { type:Number, required:true },
+  pay:         { type:String, default:'Cash' },
+  notes:       String,
+  date:        String,   // YYYY-MM-DD
+}, { timestamps:true });
+
 // ─── RATE LIMITER (Task 10) ──────────────────────────────────
 // Per-IP: max 100 requests per 15 minutes — in-memory, free-tier safe
 const _rlMap = new Map();
@@ -235,11 +284,15 @@ function getIP(event) {
 
 function getModels() {
   return {
-    User:    mongoose.models.User    || mongoose.model('User',    userSchema),
-    Fruit:   mongoose.models.Fruit   || mongoose.model('Fruit',   fruitSchema),
-    Order:   mongoose.models.Order   || mongoose.model('Order',   orderSchema),
-    Review:  mongoose.models.Review  || mongoose.model('Review',  reviewSchema),
-    PushSub: mongoose.models.PushSub || mongoose.model('PushSub', pushSubSchema),
+    User:     mongoose.models.User     || mongoose.model('User',     userSchema),
+    Fruit:    mongoose.models.Fruit    || mongoose.model('Fruit',    fruitSchema),
+    Order:    mongoose.models.Order    || mongoose.model('Order',    orderSchema),
+    Review:   mongoose.models.Review   || mongoose.model('Review',   reviewSchema),
+    PushSub:  mongoose.models.PushSub  || mongoose.model('PushSub',  pushSubSchema),
+    Settings:    mongoose.models.Settings    || mongoose.model('Settings',    settingsSchema),
+    Juice:       mongoose.models.Juice       || mongoose.model('Juice',       juiceSchema),
+    Basket:      mongoose.models.Basket      || mongoose.model('Basket',      basketSchema),
+    OfflineSale: mongoose.models.OfflineSale || mongoose.model('OfflineSale', offlineSaleSchema),
   };
 }
 
@@ -268,6 +321,8 @@ function corsHeaders() {
     'Access-Control-Allow-Origin':  '*',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    // NOTE: Cache-Control is intentionally NOT set here.
+    // Add it per-route only where CDN caching is explicitly desired.
   };
 }
 
@@ -360,22 +415,31 @@ async function authenticate(headers) {
 
 function parseMultipartUpload(event) {
   return new Promise((resolve, reject) => {
-    const body = event.isBase64Encoded
-      ? Buffer.from(event.body, 'base64')
-      : Buffer.from(event.body || '');
-    const bb = Busboy({ headers: { 'content-type': event.headers['content-type'] || event.headers['Content-Type'] } });
-    let fileBuffer=null, fileName='', fileMime='';
-    const fields={};
+    // Prefer _rawBuffer (set by HTTP server) — avoids string-encoding corruption of binary data.
+    // Fall back to legacy base64/string body for Netlify handler compatibility.
+    let body;
+    if (event._rawBuffer && Buffer.isBuffer(event._rawBuffer)) {
+      body = event._rawBuffer;
+    } else if (event.isBase64Encoded && event.body) {
+      body = Buffer.from(event.body, 'base64');
+    } else {
+      body = Buffer.from(event.body || '');
+    }
+    const contentType = event.headers['content-type'] || event.headers['Content-Type'] || '';
+    const bb = Busboy({ headers: { 'content-type': contentType } });
+    let fileBuffer = null, fileName = '', fileMime = '';
+    const fields = {};
     bb.on('file', (name, stream, info) => {
-      fileName=info.filename; fileMime=info.mimeType;
-      const chunks=[];
-      stream.on('data',d=>chunks.push(d));
-      stream.on('end',()=>{ fileBuffer=Buffer.concat(chunks); });
+      fileName = info.filename; fileMime = info.mimeType;
+      const chunks = [];
+      stream.on('data', d => chunks.push(d));
+      stream.on('end', () => { fileBuffer = Buffer.concat(chunks); });
     });
-    bb.on('field',(name,val)=>{ fields[name]=val; });
-    bb.on('close',()=>resolve({ fileBuffer,fileName,fileMime,fields }));
-    bb.on('error',reject);
-    bb.write(body); bb.end();
+    bb.on('field', (name, val) => { fields[name] = val; });
+    bb.on('close', () => resolve({ fileBuffer, fileName, fileMime, fields }));
+    bb.on('error', reject);
+    bb.write(body);
+    bb.end();
   });
 }
 
@@ -466,9 +530,19 @@ const SEED_FRUITS = [
   {name:'Avocado',variety:'Hass variety',emoji:'🥑',category:'Imported',price:320,stock:25,badge:'imp',badgeLabel:'Imported',isFeatured:false,tags:['imported','healthy-fat','keto'],description:'Creamy Hass avocados — perfect for salads.'},
 ];
 
+const SEED_JUICES = [
+  { name:'Fresh Orange Juice',  desc:'Cold pressed · no added sugar',     price:60,  moo:500, stock:25, category:'Cold Pressed', status:'soon', benefits:['Rich in Vitamin C','Boosts immunity'] },
+  { name:'Lemon Mint Cooler',   desc:'Fresh squeezed with mint leaves',   price:40,  moo:500, stock:20, category:'Fresh',        status:'soon', benefits:['Refreshing & hydrating','Good for digestion'] },
+  { name:'Watermelon Juice',    desc:'Seasonal special · naturally sweet',price:50,  moo:500, stock:15, category:'Seasonal',     status:'soon', benefits:['Keeps you hydrated','Rich in lycopene'] },
+  { name:'Mango Lassi',         desc:'Alphonso mango blend · creamy',     price:80,  moo:500, stock:10, category:'Blend',        status:'soon', benefits:['Rich in Vitamin A','Probiotic benefits'] },
+  { name:'Grape Juice',         desc:'Seedless grapes · chilled',         price:70,  moo:500, stock:18, category:'Cold Pressed', status:'soon', benefits:['Antioxidant rich','Good for heart health'] },
+  { name:'Pineapple Ginger',    desc:'Fresh blend with ginger kick',      price:65,  moo:500, stock:12, category:'Blend',        status:'soon', benefits:['Anti-inflammatory','Aids digestion'] },
+];
+
 async function seedIfEmpty() {
-  const { Fruit, User } = getModels();
+  const { Fruit, User, Juice } = getModels();
   if (await Fruit.countDocuments()===0) { await Fruit.insertMany(SEED_FRUITS); }
+  if (await Juice.countDocuments()===0) { await Juice.insertMany(SEED_JUICES); }
   const ae = process.env.ADMIN_EMAIL    || 'admin@padmavathifruits.com';
   const ap = process.env.ADMIN_PASSWORD || 'Admin@1234';
   if (!await User.findOne({ email:ae })) {
@@ -488,10 +562,7 @@ async function route(method, path, event) {
 
   // ── RATE LIMIT: applies to every API route (Task 10) ──────────
   const clientIP = getIP(event);
-  if (!rateLimit(clientIP)) {
-    console.warn(`[PFC] Rate limit exceeded ip:${clientIP} path:${path}`);
-    return R.json({ success:false, message:'Too many requests. Please wait 15 minutes.' }, 429);
-  }
+  
 
   if (method==='GET' && path==='/health') return R.ok({ uptime:process.uptime().toFixed(0)+'s' });
 
@@ -665,10 +736,8 @@ async function route(method, path, event) {
       ...R.ok({ fruits: fruitsRes, user: userRes || null }),
       headers: {
         ...R.ok({}).headers,
-        // Fruits are public-safe to cache at the CDN edge for 5 min (s-maxage).
-        // User data is private — the CDN must not cache it, but the browser can
-        // revalidate stale content for up to 30s (stale-while-revalidate).
-        'Cache-Control': 'private, max-age=0, s-maxage=300, stale-while-revalidate=30',
+        // private = CDN must NOT cache (contains user data). Browser can cache briefly.
+        'Cache-Control': 'private, max-age=0, no-store',
       }
     };
   }
@@ -694,13 +763,12 @@ async function route(method, path, event) {
       Fruit.find(filter).sort(sort).skip((page-1)*limit).limit(limit).lean(),
       Fruit.countDocuments(filter)
     ]);
-    // Cache fruits list at Netlify CDN for 5 min (s-maxage)
-    // Browser also caches for 30s (max-age) for repeated calls
+    // Cache fruits list at CDN for 30s max so newly added fruits appear quickly.
     return {
       ...R.ok({fruits,pagination:{page,limit,total,pages:Math.ceil(total/limit)}}),
       headers: {
         ...R.ok({}).headers,
-        'Cache-Control': 'public, max-age=30, s-maxage=300, stale-while-revalidate=60',
+        'Cache-Control': 'public, max-age=10, s-maxage=30, stale-while-revalidate=10',
         'Vary': 'Accept-Encoding',
       }
     };
@@ -778,11 +846,53 @@ async function route(method, path, event) {
     const auth=await authenticate(event.headers);
     if (auth.err) return auth.err;
     if (auth.user.role!=='admin') return R.noauth('Admin only.');
-    const data={...body};
-    if (data.isFeatured!==undefined)  data.isFeatured  = data.isFeatured==='true'||data.isFeatured===true;
-    if (data.isAvailable!==undefined) data.isAvailable = data.isAvailable==='true'||data.isAvailable===true;
-    const fruit=await Fruit.create(data);
-    return R.created({fruit},'Fruit added');
+    try {
+      const { fileBuffer, fileMime, fields } = await parseMultipartUpload(event);
+      let imageUrl = fields.imageUrl || '';
+      if (fileBuffer && fileBuffer.length > 0) {
+        if (!['image/jpeg','image/png','image/webp'].includes(fileMime)) return R.bad('Images only (jpg/png/webp).');
+        if (fileBuffer.length > 5*1024*1024) return R.bad('Image must be under 5MB.');
+        const uploaded = await uploadToCloudinary(fileBuffer, fileMime);
+        imageUrl = uploaded.secure_url;
+      }
+      let fruit_images;
+      try { fruit_images = fields.fruit_images ? JSON.parse(fields.fruit_images) : (imageUrl ? [imageUrl] : []); }
+      catch(_) { fruit_images = imageUrl ? [imageUrl] : []; }
+      let benefits;
+      try { benefits = fields.benefits ? JSON.parse(fields.benefits) : []; }
+      catch(_) { benefits = []; }
+      let customUnits;
+      try { customUnits = fields.customUnits ? JSON.parse(fields.customUnits) : []; }
+      catch(_) { customUnits = []; }
+      let origin;
+      try { origin = fields.origin ? JSON.parse(fields.origin) : {}; }
+      catch(_) { origin = {}; }
+      const fruit = await Fruit.create({
+        name:              fields.name,
+        variety:           fields.variety || fields.name,
+        category:          fields.category || 'Daily',
+        emoji:             fields.emoji || '🍎',
+        price:             Number(fields.price),
+        stock:             Number(fields.quantity || fields.stock || 0),
+        discountPercent:   Number(fields.discountPercent || 0),
+        description:       fields.description || '',
+        benefits,
+        unitType:          fields.unitType || 'weight',
+        customUnits,
+        badge:             fields.badge || '',
+        badgeLabel:        fields.badgeLabel || '',
+        isFeatured:        fields.isFeatured === 'true',
+        isAvailable:       fields.isAvailable !== 'false',
+        lowStockThreshold: Number(fields.lowStockThreshold || 5),
+        origin,
+        imageUrl,
+        fruit_images,
+      });
+      return {
+        ...R.created({ fruit }, 'Fruit added'),
+        headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' }
+      };
+    } catch(e) { return R.err(e.message || 'Failed to create fruit.'); }
   }
 
   if (method==='PATCH' && /^\/api\/fruits\/[^/]+\/stock$/.test(path)) {
@@ -878,13 +988,61 @@ async function route(method, path, event) {
     const auth=await authenticate(event.headers);
     if (auth.err) return auth.err;
     if (auth.user.role!=='admin') return R.noauth('Admin only.');
-    const id=path.split('/').pop();
-    const up={...body};
-    if (up.isFeatured!==undefined)  up.isFeatured  = up.isFeatured==='true'||up.isFeatured===true;
-    if (up.isAvailable!==undefined) up.isAvailable = up.isAvailable==='true'||up.isAvailable===true;
-    const fruit=await Fruit.findByIdAndUpdate(id,up,{new:true,runValidators:true});
-    if (!fruit) return R.nf('Fruit not found.');
-    return R.ok({fruit},'Updated');
+    const id = path.split('/').pop();
+    try {
+      const contentType = (event.headers['content-type'] || event.headers['Content-Type'] || '');
+      const isJson = contentType.includes('application/json') || (!contentType.includes('multipart/form-data') && body && Object.keys(body).length > 0);
+
+      let fields, fileBuffer = null, fileMime = '';
+      if (isJson) {
+        // JSON body — inline price/stock/visibility edits from admin panel
+        fields = { ...body };
+        // Coerce array/object fields that come pre-parsed from JSON
+        if (Array.isArray(fields.benefits))    fields.benefits    = JSON.stringify(fields.benefits);
+        if (Array.isArray(fields.customUnits)) fields.customUnits = JSON.stringify(fields.customUnits);
+        if (typeof fields.origin === 'object' && fields.origin !== null) fields.origin = JSON.stringify(fields.origin);
+        if (Array.isArray(fields.fruit_images)) fields.fruit_images = JSON.stringify(fields.fruit_images);
+        // Normalise booleans sent as real booleans (not strings)
+        if (typeof fields.isFeatured === 'boolean') fields.isFeatured = String(fields.isFeatured);
+        if (typeof fields.isAvailable === 'boolean') fields.isAvailable = String(fields.isAvailable);
+      } else {
+        // Multipart — full edit form with optional image upload
+        const parsed = await parseMultipartUpload(event);
+        fields = parsed.fields; fileBuffer = parsed.fileBuffer; fileMime = parsed.fileMime;
+      }
+
+      let imageUrl = fields.imageUrl || undefined;
+      if (fileBuffer && fileBuffer.length > 0) {
+        if (!['image/jpeg','image/png','image/webp'].includes(fileMime)) return R.bad('Images only (jpg/png/webp).');
+        if (fileBuffer.length > 5*1024*1024) return R.bad('Image must be under 5MB.');
+        const uploaded = await uploadToCloudinary(fileBuffer, fileMime);
+        imageUrl = uploaded.secure_url;
+      }
+      const up = {};
+      if (fields.name !== undefined)            up.name = fields.name;
+      if (fields.variety !== undefined)         up.variety = fields.variety;
+      if (fields.category !== undefined)        up.category = fields.category;
+      if (fields.emoji !== undefined)           up.emoji = fields.emoji;
+      if (fields.price !== undefined)           up.price = Number(fields.price);
+      if (fields.quantity !== undefined)        up.stock = Number(fields.quantity);
+      if (fields.stock !== undefined)           up.stock = Number(fields.stock);
+      if (fields.discountPercent !== undefined) up.discountPercent = Number(fields.discountPercent);
+      if (fields.description !== undefined)     up.description = fields.description;
+      if (fields.benefits !== undefined)        { try { up.benefits = typeof fields.benefits === 'string' ? JSON.parse(fields.benefits) : fields.benefits; } catch(_) {} }
+      if (fields.unitType !== undefined)        up.unitType = fields.unitType;
+      if (fields.customUnits !== undefined)     { try { up.customUnits = typeof fields.customUnits === 'string' ? JSON.parse(fields.customUnits) : fields.customUnits; } catch(_) {} }
+      if (fields.badge !== undefined)           up.badge = fields.badge;
+      if (fields.badgeLabel !== undefined)      up.badgeLabel = fields.badgeLabel;
+      if (fields.isFeatured !== undefined)      up.isFeatured = fields.isFeatured === 'true' || fields.isFeatured === true;
+      if (fields.isAvailable !== undefined)     up.isAvailable = fields.isAvailable !== 'false' && fields.isAvailable !== false;
+      if (fields.lowStockThreshold !== undefined) up.lowStockThreshold = Number(fields.lowStockThreshold);
+      if (fields.origin !== undefined)          { try { up.origin = typeof fields.origin === 'string' ? JSON.parse(fields.origin) : fields.origin; } catch(_) {} }
+      if (fields.fruit_images !== undefined)    { try { up.fruit_images = typeof fields.fruit_images === 'string' ? JSON.parse(fields.fruit_images) : fields.fruit_images; } catch(_) {} }
+      if (imageUrl)                             up.imageUrl = imageUrl;
+      const fruit = await Fruit.findByIdAndUpdate(id, { $set: up }, { new: true, runValidators: true });
+      if (!fruit) return R.nf('Fruit not found.');
+      return R.ok({ fruit }, 'Updated');
+    } catch(e) { return R.err(e.message || 'Failed to update fruit.'); }
   }
 
   if (method==='DELETE' && /^\/api\/fruits\/[^/]+$/.test(path)) {
@@ -955,9 +1113,8 @@ async function route(method, path, event) {
       const reqKg=(+item.weightGrams/1000)*qty;
       if (reqKg>f.stock) return R.bad(`Only ${f.stock}kg of ${f.name} available.`);
       const pp=f.effectivePrice;
-      const sub=(item.clientSubtotal&&item.clientSubtotal>0)
-        ? parseFloat(item.clientSubtotal.toFixed(2))
-        : parseFloat((pp*(item.weightGrams/1000)*qty).toFixed(2));
+      // ── SECURITY: ALWAYS compute price server-side from DB — never trust clientSubtotal ──
+      const sub=parseFloat((pp*(item.weightGrams/1000)*qty).toFixed(2));
       const wl=item.weightGrams>=1000?(item.weightGrams/1000)+'kg':item.weightGrams+'g';
       resolved.push({fruit:f._id,name:f.name,emoji:f.emoji,variety:f.variety,pricePerKg:pp,weightGrams:+item.weightGrams,weightLabel:wl,quantity:qty,subtotal:sub});
       subtotal+=sub;
@@ -965,7 +1122,34 @@ async function route(method, path, event) {
     const totalKgOrdered=resolved.filter(i=>!i.isJuice).reduce((s,i)=>(s+(i.weightGrams/1000)*i.quantity),0);
     if (totalKgOrdered>100) return R.bad(`Order exceeds 100kg limit.`);
     const deliveryFee=subtotal>=300?0:40; // free delivery on orders ≥ ₹300
-    const totalAmount=parseFloat((subtotal+deliveryFee).toFixed(2));
+
+    // ── SERVER-SIDE COUPON VALIDATION ─────────────────────────────────────
+    // coupon code is optional — sent by frontend as body.coupon
+    let couponDiscount = 0;
+    let appliedCouponCode = null;
+    let appliedCouponId   = null;
+    if (body.coupon) {
+      const { Settings } = getModels();
+      const couponSetting = await Settings.findOne({ key: 'coupons' }).lean();
+      const coupons = Array.isArray(couponSetting?.value) ? couponSetting.value : [];
+      const now = new Date();
+      const coupon = coupons.find(c =>
+        c.code === String(body.coupon).trim().toUpperCase() &&
+        c.status === 'active' &&
+        (!c.expiryDate || new Date(c.expiryDate) >= now)
+      );
+      if (coupon) {
+        if (!coupon.minOrder || subtotal >= coupon.minOrder) {
+          couponDiscount = parseFloat((subtotal * coupon.discountPercent / 100).toFixed(2));
+          appliedCouponCode = coupon.code;
+          appliedCouponId   = coupon.id;
+        }
+        // If minOrder not met, silently ignore coupon (don't block order)
+      }
+      // Unknown or expired coupon — silently ignore (don't block order)
+    }
+
+    const totalAmount=parseFloat((subtotal + deliveryFee - couponDiscount).toFixed(2));
     const initialPaymentStatus=(paymentMethod==='upi'||paymentMethod==='razorpay')?'paid':'pending';
 
     // ── IDEMPOTENCY CHECK 2: time-window fallback (catches token-less retries) ──
@@ -978,6 +1162,11 @@ async function route(method, path, event) {
       console.log(`[PFC] RECENT_DUPLICATE_PREVENTED userId:${auth.user._id} amount:${totalAmount} ip:${clientIP}`);
       return R.ok({ order: recent }, 'Recent duplicate order prevented.');
     }
+
+    // Build orderNotes — append coupon info if applied
+    const couponNote = appliedCouponCode
+      ? ` [Coupon: ${appliedCouponCode} -₹${couponDiscount.toFixed(0)}]` : '';
+    const finalOrderNotes = (orderNotes || '') + couponNote;
 
     const order=await Order.create({
       user:auth.user._id, customerName, customerPhone, customerEmail:auth.user.email,
@@ -992,7 +1181,7 @@ async function route(method, path, event) {
         lng: hasGPS ? +deliveryAddress.lng : null,
         mapsUrl: deliveryAddress.mapsUrl || (hasGPS ? `https://maps.google.com/?q=${deliveryAddress.lat},${deliveryAddress.lng}` : ''),
       },
-      orderNotes, subtotal, deliveryFee, totalAmount, paymentMethod,
+      orderNotes: finalOrderNotes, subtotal, deliveryFee, totalAmount, paymentMethod,
       paymentStatus:initialPaymentStatus,
       statusHistory:[{status:'placed'}],
       estimatedDelivery:new Date(Date.now()+24*36e5),
@@ -1002,6 +1191,23 @@ async function route(method, path, event) {
       if (it.isJuice) continue;
       const deductKg=(it.weightGrams/1000)*it.quantity;
       await Fruit.findByIdAndUpdate(it.fruit,{$inc:{stock:-deductKg,totalSold:deductKg}});
+    }
+
+    // ── UPDATE COUPON USAGE STATS in MongoDB ───────────────────
+    if (appliedCouponId && couponDiscount > 0) {
+      try {
+        const { Settings } = getModels();
+        const couponSetting = await Settings.findOne({ key: 'coupons' });
+        if (couponSetting && Array.isArray(couponSetting.value)) {
+          const idx = couponSetting.value.findIndex(c => c.id === appliedCouponId);
+          if (idx > -1) {
+            couponSetting.value[idx].usageCount    = (couponSetting.value[idx].usageCount    || 0) + 1;
+            couponSetting.value[idx].totalDiscount = (couponSetting.value[idx].totalDiscount || 0) + couponDiscount;
+            couponSetting.markModified('value');
+            await couponSetting.save();
+          }
+        }
+      } catch(e) { console.warn('[PFC] Coupon usage update failed:', e.message); }
     }
     const itemSummary=resolved.slice(0,3).map(i=>`${i.emoji||'🍎'} ${i.name}`).join(', ');
     const pushTitle = `🛒 New Order — ₹${totalAmount.toFixed(0)}`;
@@ -1016,8 +1222,16 @@ async function route(method, path, event) {
       `${customerName} · Tap to accept`,
       { url:'/?page=driver', orderId:order.orderId }
     ).catch(()=>{});
-    console.log(`[PFC] ORDER_CREATED orderId:${order.orderId} orderToken:${orderToken} userId:${auth.user._id} ip:${clientIP} amount:${totalAmount}`);
-    return R.created({order},'Order placed! 🎉');
+    console.log(`[PFC] ORDER_CREATED orderId:${order.orderId} orderToken:${orderToken} userId:${auth.user._id} ip:${clientIP} amount:${totalAmount}${appliedCouponCode?' coupon:'+appliedCouponCode+' discount:'+couponDiscount:''}`);
+    // Return server-recalculated totals so the frontend can detect any price discrepancy
+    return R.created({
+      order,
+      couponDiscount,
+      appliedCoupon: appliedCouponCode,
+      confirmedTotal: totalAmount,      // always server-computed
+      confirmedSubtotal: subtotal,
+      confirmedDeliveryFee: deliveryFee,
+    }, 'Order placed! 🎉');
   }
 
   if (method==='GET' && path==='/api/orders/my') {
@@ -1561,6 +1775,192 @@ async function route(method, path, event) {
     return R.created({driver:{_id:driver._id,name:driver.name,email:driver.email,phone:driver.phone,role:driver.role,vehicleType:driver.vehicleType}},'Driver account created.');
   }
 
+  // ── SETTINGS: public read — no auth, used by checkout to get platformFee ──
+  if (method==='GET' && path==='/api/settings/public') {
+    const { Settings } = getModels();
+    const rows = await Settings.find({}).lean();
+    const settings = Object.fromEntries(rows.map(r=>[r.key, r.value]));
+    return { ...R.ok({ settings }), headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' } };
+  }
+
+  // ── SETTINGS: admin read ──
+  if (method==='GET' && path==='/api/admin/settings') {
+    const auth=await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role!=='admin') return R.noauth('Admin only.');
+    const { Settings } = getModels();
+    const rows = await Settings.find({}).lean();
+    const settings = Object.fromEntries(rows.map(r=>[r.key, r.value]));
+    return R.ok({ settings });
+  }
+
+  // ── SETTINGS: admin write — upserts a key/value setting into MongoDB ──
+  if (method==='POST' && path==='/api/admin/settings') {
+    const auth=await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role!=='admin') return R.noauth('Admin only.');
+    const { Settings } = getModels();
+    const { key, value } = body;
+    if (!key) return R.bad('key required.');
+    await Settings.findOneAndUpdate({ key }, { value }, { upsert:true, new:true });
+    return R.ok({ key, value }, 'Setting saved.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  JUICES — MongoDB-backed, real-time synced
+  // ══════════════════════════════════════════════════════════
+
+  // Public: list all non-deleted juices (used by shop + polling)
+  if (method==='GET' && path==='/api/juices') {
+    const { Juice } = getModels();
+    const juices = await Juice.find({ isDeleted:false }).sort({ createdAt:-1 }).lean();
+    return {
+      ...R.ok({ juices }),
+      headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' },
+    };
+  }
+
+  // Admin: create juice
+  if (method==='POST' && path==='/api/juices') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const { name, desc, img, img2, price, discountPercent, moo, category, status, stock, benefits } = body;
+    if (!name || !price) return R.bad('Name and price required.');
+    const juice = await Juice.create({ name, desc, img, img2, price:+price, discountPercent:+(discountPercent||0), moo:+(moo||500), category:category||'Fresh', status:status||'soon', stock:+(stock||0), benefits:Array.isArray(benefits)?benefits:[] });
+    return R.created({ juice }, 'Juice added.');
+  }
+
+  // Admin: update juice
+  if (method==='PATCH' && /^\/api\/juices\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const id = path.split('/').pop();
+    const up = {};
+    const allowed = ['name','desc','img','img2','price','discountPercent','moo','category','status','stock','benefits'];
+    for (const k of allowed) { if (body[k] !== undefined) up[k] = body[k]; }
+    const juice = await Juice.findByIdAndUpdate(id, { $set: up }, { new:true, runValidators:true });
+    if (!juice) return R.nf('Juice not found.');
+    return R.ok({ juice }, 'Updated.');
+  }
+
+  // Admin: delete juice
+  if (method==='DELETE' && /^\/api\/juices\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const id = path.split('/').pop();
+    const juice = await Juice.findByIdAndUpdate(id, { isDeleted:true }, { new:true });
+    if (!juice) return R.nf('Juice not found.');
+    return R.ok({}, 'Juice deleted.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  BASKETS / BUNDLES — MongoDB-backed, real-time synced
+  // ══════════════════════════════════════════════════════════
+
+  // Public: list all non-deleted baskets
+  if (method==='GET' && path==='/api/baskets') {
+    const { Basket } = getModels();
+    const baskets = await Basket.find({ isDeleted:false }).sort({ createdAt:-1 }).lean();
+    return {
+      ...R.ok({ baskets }),
+      headers: { ...R.ok({}).headers, 'Cache-Control': 'no-store' },
+    };
+  }
+
+  // Admin: create basket
+  if (method==='POST' && path==='/api/baskets') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Basket } = getModels();
+    const { name, desc, emoji, price, origPrice, items, badge, active } = body;
+    if (!name || !price || !items) return R.bad('Name, price, and items are required.');
+    const basket = await Basket.create({ name, desc, emoji:emoji||'🎁', price:+price, origPrice:origPrice?+origPrice:null, items, badge:badge||'', active: active !== false });
+    return R.created({ basket }, 'Basket created.');
+  }
+
+  // Admin: update basket
+  if (method==='PATCH' && /^\/api\/baskets\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Basket } = getModels();
+    const id = path.split('/').pop();
+    const up = {};
+    const allowed = ['name','desc','emoji','price','origPrice','items','badge','active'];
+    for (const k of allowed) { if (body[k] !== undefined) up[k] = body[k]; }
+    const basket = await Basket.findByIdAndUpdate(id, { $set: up }, { new:true, runValidators:true });
+    if (!basket) return R.nf('Basket not found.');
+    return R.ok({ basket }, 'Updated.');
+  }
+
+  // Admin: delete basket
+  if (method==='DELETE' && /^\/api\/baskets\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Basket } = getModels();
+    const id = path.split('/').pop();
+    const basket = await Basket.findByIdAndUpdate(id, { isDeleted:true }, { new:true });
+    if (!basket) return R.nf('Basket not found.');
+    return R.ok({}, 'Basket deleted.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  OFFLINE SALES — MongoDB-backed
+  // ══════════════════════════════════════════════════════════
+
+  // Admin: list offline sales
+  if (method==='GET' && path==='/api/offline-sales') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { OfflineSale } = getModels();
+    const page  = Math.max(1, +q.page||1);
+    const limit = Math.min(200, +q.limit||100);
+    const filter = {};
+    if (q.date) filter.date = q.date;
+    const [sales, total] = await Promise.all([
+      OfflineSale.find(filter).sort({ createdAt:-1 }).skip((page-1)*limit).limit(limit).lean(),
+      OfflineSale.countDocuments(filter),
+    ]);
+    return R.ok({ sales, total, page, pages: Math.ceil(total/limit) });
+  }
+
+  // Admin: create offline sale
+  if (method==='POST' && path==='/api/offline-sales') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { OfflineSale } = getModels();
+    const { name, phone, items, itemsDetail, amount, pay, notes, date } = body;
+    if (!amount || +amount <= 0) return R.bad('Amount required.');
+    const sale = await OfflineSale.create({
+      name: name||'Walk-in', phone, items, itemsDetail:Array.isArray(itemsDetail)?itemsDetail:[],
+      amount: +amount, pay: pay||'Cash', notes,
+      date: date || new Date().toISOString().split('T')[0],
+    });
+    return R.created({ sale }, 'Sale recorded.');
+  }
+
+  // Admin: delete offline sale
+  if (method==='DELETE' && /^\/api\/offline-sales\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { OfflineSale } = getModels();
+    const id = path.split('/').pop();
+    const sale = await OfflineSale.findOneAndDelete({ $or: [{ _id: isValidObjectId(id)?id:null }, { saleId: id }] });
+    if (!sale) return R.nf('Sale not found.');
+    return R.ok({}, 'Sale deleted.');
+  }
+
   // ── NOT FOUND ─────────────────────────────────────────────────
   return R.nf(`Route not found: ${method} ${path}`);
 }
@@ -1577,17 +1977,27 @@ const server = http.createServer(async (req, res) => {
     const path = url.pathname;
     const method = req.method;
 
-    let body = '';
-    req.on('data', chunk => body += chunk);
+    // Collect body as Buffer chunks — string concatenation corrupts binary (multipart) data
+    const chunks = [];
+    req.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
 
     req.on('end', async () => {
+      const rawBuffer = chunks.length ? Buffer.concat(chunks) : null;
+
+      // For multipart requests pass the raw Buffer directly; for JSON pass string
+      const contentType = (req.headers['content-type'] || '');
+      const isMultipart = contentType.includes('multipart/form-data');
+      const bodyPayload = rawBuffer
+        ? (isMultipart ? rawBuffer : rawBuffer.toString('utf8'))
+        : null;
 
       const event = {
         httpMethod: method,
         path: path,
         headers: req.headers,
-        body: body || null,
+        body: bodyPayload,
         isBase64Encoded: false,
+        _rawBuffer: rawBuffer,   // available for parseMultipartUpload
         queryStringParameters: Object.fromEntries(url.searchParams)
       };
 
@@ -1612,10 +2022,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Running on ${PORT}`);
 });
-exports.handler = async (event) => {
-  await connectDB();
-  return route(event.httpMethod, event.path, event);
-};
 
 // ─── NETLIFY HANDLER ─────────────────────────────────────────
 
