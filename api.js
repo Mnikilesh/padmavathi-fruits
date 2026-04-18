@@ -117,42 +117,6 @@ async function sendOrderEmail(order) {
 
 // ─── OTP EMAIL ───────────────────────────────────────────────
 
-async function sendOtpEmail(toEmail, otp) {
-  console.log('[PFC] OTP_EMAIL: attempting to send to:', toEmail);
-  const transport = createMailTransport();
-  if (!transport) {
-    console.error('[PFC] OTP_EMAIL: transport is null — GMAIL_APP_PASSWORD may not be set');
-    return { sent: false, reason: 'Email transport not available' };
-  }
-  try {
-    const info = await transport.sendMail({
-      from: '"Padmavathi Fruits Company" <' + EMAIL_FROM + '>',
-      to:   toEmail,
-      subject: 'Your Password Reset Code — Padmavathi Fruits',
-      text: [
-        'Hello,',
-        '',
-        'You requested a password reset for your Padmavathi Fruits account.',
-        '',
-        'Your one-time code is:',
-        '',
-        '  ' + otp,
-        '',
-        'This code expires in 10 minutes.',
-        'If you did not request this, you can ignore this email.',
-        '',
-        '— Padmavathi Fruits Company',
-        'padmavathifruits.in',
-      ].join(''),
-    });
-    console.log('[PFC] OTP_EMAIL_SENT to:' + toEmail + ' messageId:' + info.messageId);
-    return { sent: true };
-  } catch(e) {
-    console.error('[PFC] OTP_EMAIL_FAILED to:' + toEmail + ' error:' + e.message);
-    return { sent: false, reason: e.message };
-  }
-}
-
 // ─── OTP EMAIL ───────────────────────────────────────────────
 async function sendOtpEmail(toEmail, otp, userName, type) {
   // type: 'register' | 'reset'  (defaults to 'reset')
