@@ -5,9 +5,18 @@
  ╚══════════════════════════════════════════════════════════════╝
 */
 require('dotenv').config();
-console.log("JWT:", process.env.JWT_SECRET ? "OK" : "MISSING");
-console.log("MONGO:", process.env.MONGODB_URI ? "OK" : "MISSING");
 'use strict';
+
+// ─── CRITICAL: Fail fast if required env vars are missing ────
+// Never allow fallback defaults for security-critical values.
+const _REQUIRED_ENV = ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'MONGODB_URI'];
+const _MISSING_ENV  = _REQUIRED_ENV.filter(k => !process.env[k]);
+if (_MISSING_ENV.length) {
+  console.error('[PFC] FATAL: Missing required environment variables:', _MISSING_ENV.join(', '));
+  console.error('[PFC] Set these in your Render/Netlify dashboard. Server will not start.');
+  process.exit(1);
+}
+console.log('[PFC] ENV check OK — JWT, MONGO set.');
 
 const mongoose      = require('mongoose');
 const bcrypt        = require('bcryptjs');
@@ -16,13 +25,9 @@ const crypto        = require('crypto');
 const Busboy        = require('busboy');
 const cloudinary    = require('cloudinary').v2;
 
-if (!process.env.JWT_SECRET) console.error("JWT_SECRET missing");
-if (!process.env.JWT_REFRESH_SECRET) console.error("JWT_REFRESH_SECRET missing");
-if (!process.env.MONGODB_URI) console.error("MONGODB_URI missing");
-
-const JWT_SECRET = process.env.JWT_SECRET;
+const JWT_SECRET         = process.env.JWT_SECRET;
 const JWT_REFRESH_SECRET = process.env.JWT_REFRESH_SECRET;
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI        = process.env.MONGODB_URI;
 const BCRYPT_ROUNDS      = parseInt(process.env.BCRYPT_ROUNDS) || 10;
 
 cloudinary.config({
@@ -107,6 +112,90 @@ async function sendOrderEmail(order) {
   } catch(e) {
     console.error('[PFC] ORDER_EMAIL_FAILED orderId:' + order.orderId + ' error:' + e.message);
     console.error('[PFC] ORDER_EMAIL_FAILED full:', e);
+  }
+}
+
+// ─── OTP EMAIL ───────────────────────────────────────────────
+
+async function sendOtpEmail(toEmail, otp) {
+  console.log('[PFC] OTP_EMAIL: attempting to send to:', toEmail);
+  const transport = createMailTransport();
+  if (!transport) {
+    console.error('[PFC] OTP_EMAIL: transport is null — GMAIL_APP_PASSWORD may not be set');
+    return { sent: false, reason: 'Email transport not available' };
+  }
+  try {
+    const info = await transport.sendMail({
+      from: '"Padmavathi Fruits Company" <' + EMAIL_FROM + '>',
+      to:   toEmail,
+      subject: 'Your Password Reset Code — Padmavathi Fruits',
+      text: [
+        'Hello,',
+        '',
+        'You requested a password reset for your Padmavathi Fruits account.',
+        '',
+        'Your one-time code is:',
+        '',
+        '  ' + otp,
+        '',
+        'This code expires in 10 minutes.',
+        'If you did not request this, you can ignore this email.',
+        '',
+        '— Padmavathi Fruits Company',
+        'padmavathifruits.in',
+      ].join('
+'),
+    });
+    console.log('[PFC] OTP_EMAIL_SENT to:' + toEmail + ' messageId:' + info.messageId);
+    return { sent: true };
+  } catch(e) {
+    console.error('[PFC] OTP_EMAIL_FAILED to:' + toEmail + ' error:' + e.message);
+    return { sent: false, reason: e.message };
+  }
+}
+
+// ─── OTP EMAIL ───────────────────────────────────────────────
+async function sendOtpEmail(toEmail, otp, userName, type) {
+  // type: 'register' | 'reset'  (defaults to 'reset')
+  console.log('[PFC] OTP_EMAIL type=' + (type||'reset') + ' attempting send to:', toEmail);
+  const transport = createMailTransport();
+  if (!transport) {
+    console.error('[PFC] OTP_EMAIL: transport is null — GMAIL_APP_PASSWORD not set in env vars. OTP not delivered.');
+    return { sent: false, reason: 'Email transport not configured (GMAIL_APP_PASSWORD missing).' };
+  }
+  const isRegister = type === 'register';
+  const subject = isRegister
+    ? 'Verify your Padmavathi Fruits account'
+    : 'Your Padmavathi Fruits password reset code';
+  const greeting = 'Hello' + (userName ? ' ' + userName : '') + ',';
+  const purpose  = isRegister
+    ? 'You are creating an account on Padmavathi Fruits. Use the code below to verify your email address:'
+    : 'You requested a password reset for your Padmavathi Fruits account. Use the code below:';
+  const text = [
+    greeting,
+    '',
+    purpose,
+    '',
+    '  ' + otp,
+    '',
+    'This code expires in 10 minutes.',
+    'If you did not request this, you can safely ignore this email.',
+    '',
+    '— Padmavathi Fruits Company',
+    'padmavathifruits.in',
+  ].join('\n');
+  try {
+    const info = await transport.sendMail({
+      from: '"Padmavathi Fruits Company" <' + EMAIL_FROM + '>',
+      to:   toEmail,
+      subject,
+      text,
+    });
+    console.log('[PFC] OTP_EMAIL_SENT to:' + toEmail + ' messageId:' + info.messageId);
+    return { sent: true };
+  } catch(e) {
+    console.error('[PFC] OTP_EMAIL_FAILED to:' + toEmail + ' error:' + e.message);
+    return { sent: false, reason: e.message };
   }
 }
 
@@ -383,8 +472,33 @@ const tokenPair   = u => {
   return { accessToken:signAccess(p), refreshToken:signRefresh(p) };
 };
 
+// ─── CORS: strict origin allowlist — never use '*' ───────────
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
+  .split(',').map(o => o.trim()).filter(Boolean)
+  .concat([
+    'https://padmavathi-fruits.pages.dev',
+    'https://padmavathifruits.netlify.app',
+    'https://padmavathifruits.in',
+    'https://www.padmavathifruits.in',
+  ]);
+
+function corsHeaders(origin) {
+  const allowed = origin && ALLOWED_ORIGINS.includes(origin);
+  if (!allowed) return { 'Content-Type': 'application/json' };
+  return {
+    'Access-Control-Allow-Origin':      origin,
+    'Access-Control-Allow-Headers':     'Content-Type, Authorization',
+    'Access-Control-Allow-Methods':     'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+    'Access-Control-Allow-Credentials': 'true',
+    'Vary': 'Origin',
+    'Content-Type': 'application/json',
+  };
+}
+
+// R helpers — origin is threaded from the request context via _reqOrigin
+let _reqOrigin = '';
 const R = {
-  json:    (data, code=200)  => ({ statusCode:code, headers:{ 'Content-Type':'application/json', ...corsHeaders() }, body:JSON.stringify(data) }),
+  json:    (data, code=200)  => ({ statusCode:code, headers:corsHeaders(_reqOrigin), body:JSON.stringify(data) }),
   ok:      (data={},msg='OK',code=200) => R.json({ success:true,  message:msg, ...data }, code),
   created: (data={},msg='Created')     => R.ok(data, msg, 201),
   bad:     (msg, errs=null)            => R.json({ success:false, message:msg, ...(errs&&{errors:errs}) }, 400),
@@ -393,14 +507,6 @@ const R = {
   nf:      (msg='Not found')           => R.json({ success:false, message:msg }, 404),
   err:     (msg='Server error',code=500)=> R.json({ success:false, message:msg }, code),
 };
-
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin':  '*',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-  };
-}
 
 function sanitize(obj) {
   if (Array.isArray(obj)) return obj.map(v => sanitize(v));
@@ -615,50 +721,104 @@ const SEED_JUICES = [
   { name:'Pineapple Ginger',    desc:'Fresh blend with ginger kick',      price:65,  moo:500, stock:12, category:'Blend',        status:'soon', benefits:['Anti-inflammatory','Aids digestion'] },
 ];
 
+let _seeded = false;
 async function seedIfEmpty() {
+  if (_seeded) return;   // run at most once per process lifetime
+  _seeded = true;
   const { Fruit, User, Juice } = getModels();
   if (await Fruit.countDocuments()===0) { await Fruit.insertMany(SEED_FRUITS); }
   if (await Juice.countDocuments()===0) { await Juice.insertMany(SEED_JUICES); }
-  const ae = process.env.ADMIN_EMAIL    || 'admin@padmavathifruits.com';
-  const ap = process.env.ADMIN_PASSWORD || 'Admin@1234';
-  if (!await User.findOne({ email:ae })) {
-    await User.create({ name:'Admin', email:ae, phone:'9876543210', password:ap, role:'admin' });
+  // SECURITY: Never seed a default admin with a known password.
+  // Admin account must be created manually or via a secure bootstrap script.
+  const ae = process.env.ADMIN_EMAIL;
+  const ap = process.env.ADMIN_PASSWORD;
+  if (!ae || !ap) {
+    console.warn('[PFC] ADMIN_EMAIL / ADMIN_PASSWORD not set — skipping admin seed. Create admin manually.');
+    return;
+  }
+  if (!await User.findOne({ email: ae.toLowerCase() })) {
+    await User.create({ name: 'Admin', email: ae, phone: process.env.ADMIN_PHONE || '9999999999', password: ap, role: 'admin' });
+    console.log('[PFC] Admin account seeded for:', ae);
   }
 }
 
-const resetOtps = new Map();
+const resetOtps    = new Map();  // email → {otp, exp}   for password reset
+const registerOtps = new Map();  // email → {otp, exp, name, phone, password, language}  for signup verification
 
 // ─── ROUTE HANDLER ───────────────────────────────────────────
 
 async function route(method, path, event) {
+  // Thread the request origin so corsHeaders() always echoes the correct origin
+  _reqOrigin = (event.headers.origin || event.headers.Origin || '').trim();
+
   const { User, Fruit, Order, Review, PushSub } = getModels();
   let body={};
   try { if (event.body) body=sanitize(JSON.parse(event.body)); } catch(_) {}
   const q = event.queryStringParameters || {};
 
-  // ── RATE LIMIT: applies to every API route (Task 10) ──────────
+  // ── RATE LIMIT: 100 req / 15 min per IP ───────────────────────
   const clientIP = getIP(event);
+  if (!rateLimit(clientIP)) {
+    return R.json({ success: false, message: 'Too many requests. Please slow down.' }, 429);
+  }
   
 
   if (method==='GET' && path==='/health') return R.ok({ uptime:process.uptime().toFixed(0)+'s' });
 
   // ── AUTH ────────────────────────────────────────────────────
 
-  if (method==='POST' && path==='/api/auth/register') {
+  // ── STEP 1 of 2: Validate fields + send OTP to email ──────
+  if (method==='POST' && path==='/api/auth/send-register-otp') {
     const {name,email,phone,password,language}=body;
     if (!name||!email||!phone||!password) return R.bad('All fields required.');
-    if (!/^\S+@\S+\.\S+$/.test(email))    return R.bad('Invalid email.');
-    if (!/^[6-9]\d{9}$/.test(phone))      return R.bad('Valid 10-digit mobile required.');
-    if (password.length<8)                return R.bad('Password min 8 chars.');
+    if (!/^\S+@\S+\.\S+$/.test(email))    return R.bad('Invalid email address.');
+    if (!/^[6-9]\d{9}$/.test(phone))      return R.bad('Valid 10-digit mobile number required.');
+    if (password.length<8)                return R.bad('Password must be at least 8 characters.');
+    // Check duplicates before sending OTP — no point sending if already registered
     const existingEmail = await User.findOne({email:email.toLowerCase()});
-    if (existingEmail) return R.bad('An account with this email already exists.');
+    if (existingEmail) return R.bad('An account with this email already exists. Please login instead.');
     const existingPhone = await User.findOne({phone});
     if (existingPhone) return R.bad('An account with this mobile number already exists.');
-    const u=await User.create({name,email,phone,password,language});
-    const {accessToken,refreshToken}=tokenPair(u);
+    // Generate OTP and hold pending registration data
+    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    registerOtps.set(email.toLowerCase(), {
+      otp, exp: Date.now() + 10 * 60 * 1000,
+      name, phone, password, language: language || 'en',
+    });
+    console.log('[PFC] REGISTER_OTP_GENERATED for:', email, '(value not logged)');
+    const result = await sendOtpEmail(email, otp, name, 'register');
+    if (!result.sent) {
+      registerOtps.delete(email.toLowerCase());
+      console.error('[PFC] REGISTER_OTP_EMAIL_FAILED:', result.reason);
+      return R.err('Could not send verification email. Please try again later.');
+    }
+    return R.ok({}, 'Verification code sent to ' + email + '. Check your inbox (and spam folder).');
+  }
+
+  // ── STEP 2 of 2: Verify OTP → create account ───────────────
+  if (method==='POST' && path==='/api/auth/register') {
+    const {email, otp} = body;
+    if (!email || !otp) return R.bad('Email and verification code are required.');
+    const pending = registerOtps.get(email.toLowerCase());
+    if (!pending)                        return R.bad('No pending registration found. Please start again.');
+    if (Date.now() > pending.exp)        { registerOtps.delete(email.toLowerCase()); return R.bad('Verification code expired. Please start again.'); }
+    if (pending.otp !== String(otp).trim()) return R.bad('Invalid verification code.');
+    // Final duplicate check (race condition — another request may have registered in the meantime)
+    const existingEmail = await User.findOne({email:email.toLowerCase()});
+    if (existingEmail) { registerOtps.delete(email.toLowerCase()); return R.bad('An account with this email already exists. Please login.'); }
+    const existingPhone = await User.findOne({phone:pending.phone});
+    if (existingPhone) { registerOtps.delete(email.toLowerCase()); return R.bad('An account with this mobile number already exists.'); }
+    const u = await User.create({
+      name: pending.name, email, phone: pending.phone,
+      password: pending.password, language: pending.language,
+    });
+    registerOtps.delete(email.toLowerCase());
+    const {accessToken,refreshToken} = tokenPair(u);
     u.refreshTokens.push({token:crypto.createHash('sha256').update(refreshToken).digest('hex'),expiresAt:new Date(Date.now()+30*864e5)});
-    u.lastLogin=new Date(); await u.save({validateBeforeSave:false});
-    return R.created({accessToken,refreshToken,user:u},'Account created!');
+    u.lastLogin = new Date();
+    await u.save({validateBeforeSave:false});
+    console.log('[PFC] REGISTER_COMPLETE userId:', u._id, 'email:', email);
+    return R.created({accessToken, refreshToken, user: u}, 'Account created! Welcome to Padmavathi Fruits.');
   }
 
   if (method==='POST' && path==='/api/auth/login') {
@@ -770,11 +930,20 @@ async function route(method, path, event) {
     const {email}=body;
     if (!email) return R.bad('Email required.');
     const user=await User.findOne({email:email.toLowerCase()});
-    if (!user) return R.bad('No account found with this email.');
+    // Return a clear message — this is a fruit delivery app, not a security-critical platform.
+    // Telling the user "no account found" is helpful UX; it directs them to register instead.
+    if (!user) return R.bad('No account found with this email. Please register first.');
     const otp=String(Math.floor(100000+Math.random()*900000));
     resetOtps.set(email.toLowerCase(),{otp,exp:Date.now()+10*60*1000});
-    console.log(`[PFC] Password reset OTP for ${email}: ${otp}`);
-    return R.ok({},'Reset code sent.');
+    console.log('[PFC] OTP generated for:', email, '(value not logged)');
+    // Actually email the OTP to the user
+    const result = await sendOtpEmail(user.email, otp);
+    if (!result.sent) {
+      resetOtps.delete(email.toLowerCase()); // clean up so the user can retry
+      console.error('[PFC] OTP_EMAIL_FAILED, reason:', result.reason);
+      return R.err('Could not send reset email. Please try again later or contact support.');
+    }
+    return R.ok({},'Reset code sent! Check your email (and spam/junk folder).');
   }
 
   if (method==='POST' && path==='/api/auth/reset-password') {
@@ -2114,7 +2283,8 @@ const server = http.createServer(async (req, res) => {
       };
 
       if (method === 'OPTIONS') {
-        res.writeHead(200, corsHeaders());
+        const origin = req.headers.origin || '';
+        res.writeHead(204, corsHeaders(origin));
         return res.end();
       }
 
@@ -2140,7 +2310,8 @@ server.listen(PORT, () => {
 exports.handler = async (event) => {
   const method=event.httpMethod.toUpperCase();
   if (method==='OPTIONS') {
-    return { statusCode:204, headers:corsHeaders(), body:'' };
+    const origin = event.headers.origin || event.headers.Origin || '';
+    return { statusCode:204, headers:corsHeaders(origin), body:'' };
   }
   let rawPath=event.rawUrl ? new URL(event.rawUrl).pathname : (event.path||'/');
   rawPath=rawPath

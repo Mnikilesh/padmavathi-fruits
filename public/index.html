@@ -4428,7 +4428,7 @@ body.on-admin   #floatingCartBar { display: none !important; }
     </div>
     <div id="forgotForm" style="display:none">
       <div class="modal-form">
-        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Enter your email. We will send a reset code via WhatsApp to your registered number.</p>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Enter your registered email address. We'll send a 6-digit reset code to your inbox.</p>
         <input id="fp-email" type="email" placeholder="Email address">
         <div class="modal-err" id="forgotErr"></div>
         <button class="modal-submit" onclick="doForgotPassword()">Send Reset Code →</button>
@@ -4445,12 +4445,26 @@ body.on-admin   #floatingCartBar { display: none !important; }
     </div>
     <div id="registerForm" style="display:none">
       <div class="modal-form">
-        <input id="r-name" type="text" placeholder="Full name">
-        <input id="r-email" type="email" placeholder="Email address">
-        <input id="r-phone" type="tel" placeholder="Mobile number (10 digits)">
-        <div class="pw-wrap"><input id="r-pass" type="password" placeholder="Password (min 8 characters)"><button type="button" class="pw-eye" id="eye-r-pass" onclick="togglePwEye('r-pass')" tabindex="-1" aria-label="Toggle password visibility"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
-        <div class="modal-err" id="registerErr"></div>
-        <button class="modal-submit" onclick="doRegister()">Create Account →</button>
+        <!-- Step 1: Details -->
+        <div id="registerStep1">
+          <input id="r-name" type="text" placeholder="Full name" autocomplete="name">
+          <input id="r-email" type="email" placeholder="Email address" autocomplete="email">
+          <input id="r-phone" type="tel" placeholder="Mobile number (10 digits)" autocomplete="tel">
+          <div class="pw-wrap"><input id="r-pass" type="password" placeholder="Password (min 8 characters)" autocomplete="new-password"><button type="button" class="pw-eye" id="eye-r-pass" onclick="togglePwEye('r-pass')" tabindex="-1" aria-label="Toggle password visibility"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg></button></div>
+          <div class="modal-err" id="registerErr"></div>
+          <button class="modal-submit" id="registerSendOtpBtn" onclick="doSendRegisterOtp()">Send Verification Code →</button>
+        </div>
+        <!-- Step 2: OTP verification (shown after code is sent) -->
+        <div id="registerStep2" style="display:none">
+          <p style="font-size:13px;color:var(--muted);margin-bottom:12px;line-height:1.5">A 6-digit verification code was sent to <strong id="registerEmailDisplay"></strong>. Enter it below to activate your account.</p>
+          <input id="r-otp" type="text" inputmode="numeric" placeholder="6-digit code" maxlength="6" style="letter-spacing:.25em;text-align:center;font-size:18px;font-weight:700">
+          <div class="modal-err" id="registerOtpErr"></div>
+          <button class="modal-submit" id="registerVerifyBtn" onclick="doRegister()">Verify &amp; Create Account →</button>
+          <div style="text-align:center;margin-top:10px;display:flex;gap:12px;justify-content:center;flex-wrap:wrap">
+            <button onclick="doSendRegisterOtp(true)" style="background:none;border:none;color:var(--g);font-size:12px;cursor:pointer;font-family:var(--font-body);text-decoration:underline">Resend code</button>
+            <button onclick="resetRegisterForm()" style="background:none;border:none;color:var(--muted);font-size:12px;cursor:pointer;font-family:var(--font-body);text-decoration:underline">Change details</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -5234,12 +5248,32 @@ function getSmartUnits(f) {
 }
 
 // ─── AUTH HELPERS ───────────────────────────────────────
-const AT = {
-  get a() { return localStorage.getItem('pfc_at'); },
-  get r() { return localStorage.getItem('pfc_rt'); },
-  set(at, rt) { localStorage.setItem('pfc_at', at); if (rt) localStorage.setItem('pfc_rt', rt); },
-  clear() { localStorage.removeItem('pfc_at'); localStorage.removeItem('pfc_rt'); }
-};
+// ── JWT storage: access token in memory (XSS-safe), refresh token
+//    in sessionStorage (not localStorage — clears on tab/browser close).
+//    For maximum security, move refresh token to httpOnly cookie server-side.
+const AT = (() => {
+  let _at = null;  // access token — memory only, never persisted to storage
+  const RT_KEY = 'pfc_rt';
+  return {
+    get a() { return _at; },
+    get r() {
+      try { return sessionStorage.getItem(RT_KEY); } catch(_) { return null; }
+    },
+    set(at, rt) {
+      _at = at || null;
+      if (rt) { try { sessionStorage.setItem(RT_KEY, rt); } catch(_) {} }
+    },
+    clear() {
+      _at = null;
+      try { sessionStorage.removeItem(RT_KEY); } catch(_) {}
+      // Clean up any legacy localStorage tokens from older versions
+      try { localStorage.removeItem('pfc_at'); localStorage.removeItem('pfc_rt'); } catch(_) {}
+    },
+    // Restore access token after page refresh by attempting a silent refresh
+    // (refresh token survives in sessionStorage within the same browser session)
+    get needsRestore() { return !_at && !!this.r; },
+  };
+})();
 
 // ── Per-day API call guard ────────────────────────────────────
 // Resets every calendar day (not every page reload) so normal usage
@@ -5332,6 +5366,15 @@ async function doRefresh() {
   const r = await http('POST', '/auth/refresh', { refreshToken: AT.r }, true);
   if (r.ok && r.accessToken) { AT.set(r.accessToken, r.refreshToken); return true; }
   AT.clear(); currentUser = null; updateNavAuth(); return false;
+}
+
+// Silently restore session on page load if a refresh token exists in sessionStorage.
+// Because the access token lives only in memory, it's gone after every page reload.
+// This runs once at init before any authenticated API calls are made.
+async function restoreSessionIfNeeded() {
+  if (AT.needsRestore) {
+    await doRefresh();
+  }
 }
 
 function toast(msg, type) {
@@ -5483,6 +5526,8 @@ function switchAuthTab(tab) {
   document.getElementById('tabRegister').classList.toggle('active', tab === 'register');
   document.getElementById('loginErr').textContent = '';
   document.getElementById('registerErr').textContent = '';
+  // Reset multi-step register form back to step 1 whenever tab is switched
+  if (tab === 'register') resetRegisterForm();
 }
 
 async function doLogin() {
@@ -5509,29 +5554,76 @@ async function doLogin() {
   } else { document.getElementById('loginErr').textContent = r.message || 'Login failed.'; }
 }
 
-async function doRegister() {
-  const name  = document.getElementById('r-name').value.trim();
-  const email = document.getElementById('r-email').value.trim();
+// ── Register Step 1: validate details + send OTP ────────────
+async function doSendRegisterOtp(isResend) {
+  const name     = document.getElementById('r-name').value.trim();
+  const email    = document.getElementById('r-email').value.trim();
   const phoneRaw = document.getElementById('r-phone').value.trim();
-  const phone = validatePhone(phoneRaw);
-  const pass  = document.getElementById('r-pass').value;
-  if (!name || !email || !phoneRaw || !pass) { document.getElementById('registerErr').textContent = 'Fill all fields.'; return; }
-  if (!phone) { document.getElementById('registerErr').textContent = 'Enter a valid 10-digit mobile number (e.g. 9876543210 or +91 98765 43210).'; return; }
-  const btn = document.querySelector('#registerForm .modal-submit');
-  btn.textContent = 'Creating…'; btn.disabled = true;
-  const r = await http('POST', '/auth/register', { name, email, phone, password: pass }, true);
-  btn.textContent = 'Create Account →'; btn.disabled = false;
+  const phone    = validatePhone(phoneRaw);
+  const pass     = document.getElementById('r-pass').value;
+  const errEl    = document.getElementById('registerErr');
+  errEl.textContent = '';
+  if (!name || !email || !phoneRaw || !pass) { errEl.textContent = 'Please fill all fields.'; return; }
+  if (!phone) { errEl.textContent = 'Enter a valid 10-digit mobile number (e.g. 9876543210).'; return; }
+  const btn = document.getElementById('registerSendOtpBtn');
+  const origText = btn.textContent;
+  btn.textContent = isResend ? 'Resending…' : 'Sending code…'; btn.disabled = true;
+  const r = await http('POST', '/auth/send-register-otp', { name, email, phone, password: pass }, true);
+  btn.textContent = origText; btn.disabled = false;
   if (r.ok) {
-    AT.set(r.accessToken, r.refreshToken); currentUser = r.user;
-    updateNavAuth(); closeAuth();
-    toast('Welcome, ' + r.user.name.split(' ')[0] + '!');
+    // Show OTP step
+    document.getElementById('registerStep1').style.display = 'none';
+    document.getElementById('registerStep2').style.display = '';
+    document.getElementById('registerEmailDisplay').textContent = email;
+    document.getElementById('registerOtpErr').textContent = '';
+    document.getElementById('r-otp').value = '';
+    setTimeout(() => document.getElementById('r-otp').focus(), 80);
+    if (isResend) toast('New code sent to ' + email);
   } else {
-    // Show specific duplicate errors prominently
-    const msg = r.message || 'Registration failed.';
-    document.getElementById('registerErr').textContent = msg;
+    const msg = r.message || 'Could not send code. Please try again.';
+    errEl.textContent = msg;
+    // If already registered — suggest login
+    if (msg.toLowerCase().includes('already exists') || msg.toLowerCase().includes('login')) {
+      errEl.textContent = msg + ' — use "Login" tab instead.';
+    }
     if (msg.includes('email')) document.getElementById('r-email')?.focus();
     else if (msg.includes('mobile')) document.getElementById('r-phone')?.focus();
   }
+}
+
+// ── Register Step 2: verify OTP → create account ─────────────
+async function doRegister() {
+  const email = document.getElementById('r-email').value.trim();
+  const otp   = document.getElementById('r-otp').value.trim();
+  const errEl = document.getElementById('registerOtpErr');
+  errEl.textContent = '';
+  if (!otp || otp.length < 6) { errEl.textContent = 'Enter the 6-digit code from your email.'; return; }
+  const btn = document.getElementById('registerVerifyBtn');
+  btn.textContent = 'Verifying…'; btn.disabled = true;
+  const r = await http('POST', '/auth/register', { email, otp }, true);
+  btn.textContent = 'Verify & Create Account →'; btn.disabled = false;
+  if (r.ok) {
+    AT.set(r.accessToken, r.refreshToken); currentUser = r.user;
+    updateNavAuth(); closeAuth();
+    toast('Welcome to Padmavathi Fruits, ' + r.user.name.split(' ')[0] + '! 🎉');
+    if (Notification.permission === 'granted') subscribeWebPush(true);
+  } else {
+    const msg = r.message || 'Verification failed.';
+    errEl.textContent = msg;
+    // Expired or wrong → let them retry or go back
+    if (msg.toLowerCase().includes('expired') || msg.toLowerCase().includes('start again')) {
+      errEl.textContent = msg + ' Click "Change details" to try again.';
+    }
+  }
+}
+
+// Reset register form back to step 1
+function resetRegisterForm() {
+  document.getElementById('registerStep1').style.display = '';
+  document.getElementById('registerStep2').style.display = 'none';
+  document.getElementById('registerErr').textContent = '';
+  document.getElementById('registerOtpErr').textContent = '';
+  document.getElementById('r-otp').value = '';
 }
 
 
@@ -5737,7 +5829,7 @@ async function loadFruits(forceRefresh = false) {
       }
     } catch(_) {}
   }
-  const r = await GET('/fruits?limit=100&ts=' + Date.now());
+  const r = await GET('/fruits?limit=100');
   if (r.ok && r.fruits) {
     allFruits = r.fruits;
     // Cache to sessionStorage for 5-min reuse
@@ -7865,7 +7957,7 @@ async function placeOrder() {
     // Invalidate fruit cache after checkout (stock may have changed)
     // Next page navigation will fetch fresh data
     invalidateFruitsCache();
-    const fr = await GET('/fruits?limit=100&ts=' + Date.now());
+    const fr = await GET('/fruits?limit=100');
     if (fr.ok && fr.fruits) {
       allFruits = fr.fruits;
       try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: fr.fruits })); } catch(_) {}
@@ -7900,7 +7992,7 @@ async function placeOrder() {
   // Force-fetch the latest catalog before building the payload.
   // If any price changed, abort and warn the user rather than proceeding silently.
   try {
-    const freshFr = await GET('/fruits?limit=100&ts=' + Date.now());
+    const freshFr = await GET('/fruits?limit=100');
     if (freshFr.ok && Array.isArray(freshFr.fruits) && freshFr.fruits.length > 0) {
       const priceChanged = fruitItems.some(c => {
         const fresh = freshFr.fruits.find(f => f._id === (c.fruit || c.fid));
@@ -9596,6 +9688,7 @@ async function loadAdminDrivers() {
     // Auto-refresh admin active deliveries every 30s so the map embeds stay current
     clearInterval(window._adminDeliveryRefreshTimer);
     if (activeOrders.length > 0) {
+      if (window._adminDeliveryRefreshTimer) clearInterval(window._adminDeliveryRefreshTimer);
       window._adminDeliveryRefreshTimer = setInterval(async () => {
         if (document.visibilityState !== 'visible') return;
         // Only refresh if driver tab is currently active
@@ -10868,7 +10961,7 @@ function _normalizeJuice(j) {
 
 async function loadJuicesFromAPI() {
   try {
-    const r = await fetch(API + '/juices?ts=' + Date.now());
+    const r = await fetch(API + '/juices');
     if (!r.ok) return;
     const d = await r.json();
     if (d.success && Array.isArray(d.juices)) {
@@ -12995,7 +13088,7 @@ let _localOfflineSales = [];   // in-memory mirror
 
 async function loadOfflineSalesFromAPI() {
   try {
-    const r = await fetch(API + '/offline-sales?ts=' + Date.now(), {
+    const r = await fetch(API + '/offline-sales', {
       headers: { 'Authorization': 'Bearer ' + AT.a },
     });
     if (!r.ok) return;
@@ -14623,9 +14716,14 @@ async function doForgotPassword() {
   if (r.ok) {
     document.getElementById('fpOtpSection').style.display = 'block';
     document.getElementById('forgotErr').textContent = '';
-    toast('Reset code sent to your registered WhatsApp number.');
+    toast('Reset code sent to your email. Check inbox and spam folder.');
   } else {
-    document.getElementById('forgotErr').textContent = r.message || 'Email not found.';
+    const msg = r.message || 'Something went wrong.';
+    document.getElementById('forgotErr').textContent = msg;
+    // If user not found — guide them to register
+    if (msg.toLowerCase().includes('register') || msg.toLowerCase().includes('no account')) {
+      document.getElementById('forgotErr').innerHTML = msg + ' &mdash; <a href="#" onclick="switchAuthTab('register');document.getElementById('forgotForm').style.display='none';document.getElementById('registerForm').style.display='';return false;" style="color:var(--g);text-decoration:underline">Create an account</a>';
+    }
   }
 }
 
@@ -15071,7 +15169,7 @@ async function savePlatformFee() {
 /* Covers: platformFee, orderNowEnabled, contactInfo, coupons              */
 async function loadPlatformFeeFromServer() {
   try {
-    const resp = await fetch(API + '/settings/public?ts=' + Date.now());
+    const resp = await fetch(API + '/settings/public');
     if (!resp.ok) return;
     const d = await resp.json();
     if (d.success && d.settings != null) {
@@ -15493,6 +15591,10 @@ function initTheme() {
 
 // ─── INIT ────────────────────────────────────────────────
 async function init() {
+  // ── RESTORE SESSION: access token is memory-only, re-issue it silently
+  // if a valid refresh token exists in sessionStorage from a prior session.
+  await restoreSessionIfNeeded();
+
   initTheme();
   if (typeof lucide !== 'undefined') lucide.createIcons();
   initHero();
@@ -15606,7 +15708,7 @@ async function init() {
 
   // ── REAL-TIME SYNC POLLING ─────────────────────────────────────
   // Every 5 seconds: fetch juices + baskets (fruit catalog uses its own
-  // visibilitychange strategy above). ?ts= busts CDN/browser cache.
+  // visibilitychange strategy above).
   let _rtPollTimer = null;
   let _rtFruitsTick = 0;  // fruits polled every 3rd tick (~15s) to avoid excess calls
   function _startRealTimePolling() {
@@ -15614,17 +15716,17 @@ async function init() {
     _rtPollTimer = setInterval(async () => {
       try {
         _rtFruitsTick++;
-        const ts = Date.now();
+        // No ?ts= cache-busting — server sets correct Cache-Control headers.
+
+        // because it's not in the server's Access-Control-Allow-Headers list.
         const fetches = [
-          fetch(API + '/juices?ts=' + ts).then(r => r.ok ? r.json() : null),
-          fetch(API + '/baskets?ts=' + ts).then(r => r.ok ? r.json() : null),
+          fetch(API + '/juices').then(r => r.ok ? r.json() : null),
+          fetch(API + '/baskets').then(r => r.ok ? r.json() : null),
         ];
-        // Refresh fruit catalog every 3rd tick (~15s) — picks up admin price/stock changes
+        // Refresh fruit catalog every 3rd tick (~90s) — picks up admin price/stock changes
         if (_rtFruitsTick % 3 === 0) {
           fetches.push(
-            fetch(API + '/fruits?limit=100&ts=' + ts, {
-              headers: { 'Cache-Control': 'no-cache' }
-            }).then(r => r.ok ? r.json() : null)
+            fetch(API + '/fruits?limit=100').then(r => r.ok ? r.json() : null)
           );
         } else {
           fetches.push(Promise.resolve(null));
@@ -15692,7 +15794,7 @@ function _normalizeBasket(b) {
 
 async function loadBasketsFromAPI() {
   try {
-    const r = await fetch(API + '/baskets?ts=' + Date.now());
+    const r = await fetch(API + '/baskets');
     if (!r.ok) return;
     const d = await r.json();
     if (d.success && Array.isArray(d.baskets)) {
