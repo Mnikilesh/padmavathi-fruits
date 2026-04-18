@@ -5330,9 +5330,12 @@ async function http(method, path, body, skipAuth, skipGuard) {
   const forceAuth = path && (path.includes('/admin/') || path.includes('/driver/'));
   if (AT.a && (!skipAuth || forceAuth)) h['Authorization'] = 'Bearer ' + AT.a;
 
-  // Task 9: Abort after 10s to prevent hanging requests
+  // Timeout: 55s for bootstrap (Render free tier cold-starts can take ~45s),
+  // 15s for everything else. Keeps UX snappy on fast requests but survives cold starts.
+  const isBootstrap = path === '/bootstrap' || path.startsWith('/bootstrap');
+  const timeoutMs = isBootstrap ? 55000 : 15000;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const r = await fetch(API + path, { method, headers: h, signal: controller.signal, ...(body ? { body: JSON.stringify(body) } : {}) });
@@ -15674,7 +15677,12 @@ async function init() {
     }
   } else {
     // ── Cache miss: call bootstrap once and lock the session ──
+    // Show a gentle warning after 4s so users know the server is waking up (Render cold start)
+    const _wakeTimer = setTimeout(() => {
+      toast('🌿 Server is waking up — fruits loading shortly...', 'info');
+    }, 4000);
     const boot = await GET('/bootstrap' + (AT.a ? '' : '?noauth=1'));
+    clearTimeout(_wakeTimer);
     sessionStorage.setItem(BOOT_LOCK_KEY, String(Date.now()));
 
     if (boot.ok) {
