@@ -3983,6 +3983,24 @@ body.on-admin   #floatingCartBar { display: none !important; }
             <div id="platformFeeMsg" style="font-size:11px;color:var(--muted);margin-top:6px;min-height:14px"></div>
           </div>
 
+          <!-- Delivery Charges by Pincode -->
+          <div style="background:var(--gp);border:1px solid var(--border2);border-radius:var(--r-lg);padding:18px">
+            <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:4px;display:flex;align-items:center;gap:6px">
+              <span style="font-size:16px">🚴</span> Delivery Charges by Area
+            </div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:14px;line-height:1.5">
+              Set delivery fee (₹) for each pincode. Changes apply instantly to all customers.
+            </div>
+            <div id="pincodeFeeRows" style="display:flex;flex-direction:column;gap:8px;margin-bottom:12px">
+              <!-- rows injected by _renderPincodeFeeRows() -->
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+              <button onclick="_addPincodeFeeRow()" style="padding:7px 14px;background:var(--gp2);color:var(--g);border:1.5px dashed var(--border);border-radius:var(--r-sm);font-size:12px;font-weight:700;cursor:pointer;font-family:var(--font-body)">+ Add Pincode</button>
+              <button onclick="savePincodeFees()" style="padding:7px 18px;background:var(--g);color:#fff;border:none;border-radius:var(--r-sm);font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font-body)">💾 Save Charges</button>
+              <span id="pincodeFeeMsg" style="font-size:11px;color:var(--muted)"></span>
+            </div>
+          </div>
+
         </div>
       </div>
       <!-- ── END ADMIN CONTROLS ──────────────────────────────── -->
@@ -7158,12 +7176,36 @@ function closeCart() { document.getElementById('overlay').classList.remove('show
 
 function getCartSubtotal() { return cart.reduce((a, c) => a + c.price, 0); }
 
-// Free delivery when total fruit weight >= 5kg
+// ── Pincode → delivery fee map (loaded from server, with hardcoded defaults) ──
+let _pincodeFeesCache = {
+  // Warangal
+  '506001':40,'506002':40,'506005':40,'506006':40,'506007':40,
+  '506008':40,'506009':40,'506010':40,'506011':40,'506013':40,'506015':40,'506166':40,
+  // Hanamkonda
+  '506370':50,'506371':50,'506372':50,'506004':50,
+  // Kazipet
+  '506003':60,'506142':60,
+};
+
+function getDeliveryFeeByPincode(pincode) {
+  const p = (pincode || '').trim();
+  if (p && _pincodeFeesCache[p] !== undefined) return _pincodeFeesCache[p];
+  // Fallback: try city from checkout form
+  const city = (typeof document !== 'undefined' && document.getElementById('co-city')?.value.trim()) || '';
+  const c = city.toLowerCase();
+  if (c.includes('kazipet') || c.includes('kzp'))    return 60;
+  if (c.includes('hanamkonda') || c.includes('hnk')) return 50;
+  return 40;
+}
+
+// Legacy alias used by floating cart bar & cart drawer (no pincode context there)
 function getDeliveryFeeByCity(city) {
+  const pin = (typeof document !== 'undefined' && document.getElementById('co-pin')?.value.trim()) || '';
+  if (pin.length === 6 && _pincodeFeesCache[pin] !== undefined) return _pincodeFeesCache[pin];
   const c = (city || '').toLowerCase().trim();
   if (c.includes('kazipet') || c.includes('kzp'))    return 60;
   if (c.includes('hanamkonda') || c.includes('hnk') || c.includes('hanmakonda') || c.includes('hanmkonda')) return 50;
-  return 40; // Warangal and default
+  return 40;
 }
 
 function calcDeliveryFee(cartItems, city) {
@@ -7172,7 +7214,10 @@ function calcDeliveryFee(cartItems, city) {
   const discount = typeof getCouponDiscount === 'function' ? getCouponDiscount(subtotal) : 0;
   const FREE_THRESHOLD = 800;
   if ((subtotal - discount) >= FREE_THRESHOLD) return 0;
-  // Get city from argument or from checkout form
+  // Prefer pincode from checkout form (most accurate)
+  const pin = (typeof document !== 'undefined' && document.getElementById('co-pin')?.value.trim()) || '';
+  if (pin.length === 6) return getDeliveryFeeByPincode(pin);
+  // Fallback to city
   const resolvedCity = city
     || (typeof document !== 'undefined' && document.getElementById('co-city')?.value.trim())
     || 'Warangal';
@@ -7642,10 +7687,21 @@ function checkPincodeDelivery(val) {
   if (!msg || !inp) return;
   const pin = val.trim();
   if (pin.length < 6) { msg.style.display = 'none'; inp.style.borderColor = ''; return; }
+
   if (SERVICEABLE_PINCODES.has(pin)) {
-    msg.innerHTML = '<span style="color:#166534;background:#F0FDF4;padding:3px 8px;border-radius:6px;display:inline-block">&#10003; We deliver to this area!</span>';
+    const fee = _pincodeFeesCache[pin] !== undefined ? _pincodeFeesCache[pin] : getDeliveryFeeByPincode(pin);
+    const sub = getCartSubtotal();
+    const disc = typeof getCouponDiscount === 'function' ? getCouponDiscount(sub) : 0;
+    const FREE_THRESHOLD = 800;
+    const isFree = (sub - disc) >= FREE_THRESHOLD;
+    const feeText = isFree
+      ? '🎉 Free delivery on your order!'
+      : 'Delivery charge: <b>₹' + fee + '</b>';
+    msg.innerHTML = '<span style="color:#166534;background:#F0FDF4;padding:4px 10px;border-radius:6px;display:inline-block">&#10003; We deliver here! ' + feeText + '</span>';
     msg.style.display = 'block';
     inp.style.borderColor = '#22C55E';
+    // Re-render summary so delivery fee updates immediately
+    if (typeof renderOrderSummary === 'function') renderOrderSummary();
   } else {
     msg.innerHTML = '<span style="color:#92400E;background:#FFFBEB;padding:4px 8px;border-radius:6px;display:inline-block">&#9888; Coming soon to ' + pin + '! Currently serving only selected locations in HNK, WGL &amp; KZP areas.</span>';
     msg.style.display = 'block';
@@ -15048,8 +15104,106 @@ async function loadPlatformFeeFromServer() {
         } catch(_) {}
         saveCoupons(); // fire-and-forget: save to server so next load gets server data
       }
+      // ── Pincode delivery fees ──
+      if (d.settings.pincode_delivery_fees && typeof d.settings.pincode_delivery_fees === 'object') {
+        _pincodeFeesCache = { ..._pincodeFeesCache, ...d.settings.pincode_delivery_fees };
+        // Refresh serviceable pincode set from server keys
+        const serverPins = Object.keys(d.settings.pincode_delivery_fees);
+        serverPins.forEach(p => SERVICEABLE_PINCODES.add(p));
+        // Update admin UI inputs if panel is open
+        _syncPincodeFeeInputs();
+      }
     }
   } catch(_) { /* retain in-memory values */ }
+}
+
+/* ── Admin: pincode delivery fee editor ── */
+function _renderPincodeFeeRows() {
+  const container = document.getElementById('pincodeFeeRows');
+  if (!container) return;
+  const entries = Object.entries(_pincodeFeesCache).sort((a,b) => a[0].localeCompare(b[0]));
+  container.innerHTML = entries.map(([pin, fee]) =>
+    '<div style="display:flex;align-items:center;gap:8px" data-pin-row>' +
+      '<input type="text" value="' + pin + '" placeholder="Pincode" maxlength="6" inputmode="numeric" ' +
+        'style="width:90px;padding:6px 8px;border:1.5px solid var(--border);border-radius:var(--r-sm);font-size:13px;font-family:var(--font-body);outline:none" ' +
+        'class="pin-input" onfocus="this.style.borderColor=\'var(--g)\'" onblur="this.style.borderColor=\'var(--border)\'">' +
+      '<span style="color:var(--muted);font-size:12px">→</span>' +
+      '<div style="position:relative;flex:1">' +
+        '<span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;font-weight:700;color:var(--muted)">₹</span>' +
+        '<input type="number" value="' + fee + '" min="0" max="9999" ' +
+          'style="width:100%;padding:6px 8px 6px 22px;border:1.5px solid var(--border);border-radius:var(--r-sm);font-size:13px;font-family:var(--font-body);outline:none" ' +
+          'class="fee-input" onfocus="this.style.borderColor=\'var(--g)\'" onblur="this.style.borderColor=\'var(--border)\'">' +
+      '</div>' +
+      '<button onclick="this.closest(\'[data-pin-row]\').remove()" title="Remove" ' +
+        'style="width:28px;height:28px;border:none;background:#FEE2E2;color:#B91C1C;border-radius:6px;cursor:pointer;font-size:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center">✕</button>' +
+    '</div>'
+  ).join('');
+}
+
+function _addPincodeFeeRow() {
+  const container = document.getElementById('pincodeFeeRows');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.setAttribute('data-pin-row', '');
+  row.style.cssText = 'display:flex;align-items:center;gap:8px';
+  row.innerHTML =
+    '<input type="text" placeholder="506001" maxlength="6" inputmode="numeric" ' +
+      'style="width:90px;padding:6px 8px;border:1.5px solid var(--g);border-radius:var(--r-sm);font-size:13px;font-family:var(--font-body);outline:none" ' +
+      'class="pin-input" onfocus="this.style.borderColor=\'var(--g)\'" onblur="this.style.borderColor=\'var(--border)\'">' +
+    '<span style="color:var(--muted);font-size:12px">→</span>' +
+    '<div style="position:relative;flex:1">' +
+      '<span style="position:absolute;left:8px;top:50%;transform:translateY(-50%);font-size:13px;font-weight:700;color:var(--muted)">₹</span>' +
+      '<input type="number" placeholder="40" min="0" max="9999" ' +
+        'style="width:100%;padding:6px 8px 6px 22px;border:1.5px solid var(--border);border-radius:var(--r-sm);font-size:13px;font-family:var(--font-body);outline:none" ' +
+        'class="fee-input" onfocus="this.style.borderColor=\'var(--g)\'" onblur="this.style.borderColor=\'var(--border)\'">' +
+    '</div>' +
+    '<button onclick="this.closest(\'[data-pin-row]\').remove()" title="Remove" ' +
+      'style="width:28px;height:28px;border:none;background:#FEE2E2;color:#B91C1C;border-radius:6px;cursor:pointer;font-size:14px;flex-shrink:0;display:flex;align-items:center;justify-content:center">✕</button>';
+  container.appendChild(row);
+  row.querySelector('.pin-input').focus();
+}
+
+function _syncPincodeFeeInputs() {
+  // If the admin panel is open, refresh the rows to show updated values
+  const container = document.getElementById('pincodeFeeRows');
+  if (container && container.children.length > 0) _renderPincodeFeeRows();
+}
+
+async function savePincodeFees() {
+  const msg = document.getElementById('pincodeFeeMsg');
+  const rows = document.querySelectorAll('#pincodeFeeRows [data-pin-row]');
+  const fees = {};
+  let valid = true;
+  rows.forEach(row => {
+    const pin = row.querySelector('.pin-input')?.value.trim();
+    const fee = parseInt(row.querySelector('.fee-input')?.value) || 0;
+    if (pin && /^\d{6}$/.test(pin)) fees[pin] = fee;
+    else if (pin) valid = false;
+  });
+  if (!valid) { toast('Some pincodes are invalid. Use 6-digit codes only.', 'error'); return; }
+  if (msg) { msg.style.color = '#888'; msg.textContent = 'Saving…'; }
+  try {
+    const resp = await fetch(API + '/admin/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ key: 'pincode_delivery_fees', value: fees }),
+    });
+    if (resp.ok) {
+      _pincodeFeesCache = fees;
+      // Refresh serviceable set
+      Object.keys(fees).forEach(p => SERVICEABLE_PINCODES.add(p));
+      if (msg) {
+        msg.style.color = '#065f46';
+        msg.textContent = '✅ ' + Object.keys(fees).length + ' pincodes saved!';
+        setTimeout(() => { if (msg) msg.textContent = ''; }, 3000);
+      }
+      toast('🚴 Delivery charges saved for ' + Object.keys(fees).length + ' pincodes', 'success');
+    } else {
+      if (msg) { msg.style.color = 'red'; msg.textContent = 'Save failed.'; }
+    }
+  } catch(e) {
+    if (msg) { msg.style.color = 'red'; msg.textContent = 'Error: ' + e.message; }
+  }
 }
 
 /* ── Admin panel boot: sync from MongoDB ── */
@@ -15058,6 +15212,7 @@ function initAdminControls() {
   const feeInput = document.getElementById('platformFeeInput');
   if (feeInput) feeInput.value = _platformFeeCache;
   loadPlatformFeeFromServer(); // always fetch fresh from MongoDB
+  _renderPincodeFeeRows(); // populate delivery charge rows
 }
 
 /* ── Checkout: handle "Order Now" slot click when disabled ── */
