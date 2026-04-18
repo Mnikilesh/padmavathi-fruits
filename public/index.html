@@ -12170,13 +12170,13 @@ function buildHoursTable() {
   const table = document.getElementById('hoursTable');
   if (!table) return;
   const days = [
-    { name:'Sunday',    hours:'6:00 AM – 8:00 PM'  },
-    { name:'Monday',    hours:'6:00 AM – 9:00 PM'  },
-    { name:'Tuesday',   hours:'6:00 AM – 9:00 PM'  },
-    { name:'Wednesday', hours:'6:00 AM – 9:00 PM'  },
-    { name:'Thursday',  hours:'6:00 AM – 9:00 PM'  },
-    { name:'Friday',    hours:'6:00 AM – 9:00 PM'  },
-    { name:'Saturday',  hours:'5:30 AM – 10:00 PM' },
+    { name:'Sunday',    hours:'7:00 AM – 8:00 PM'  },
+    { name:'Monday',    hours:'7:00 AM – 8:00 PM'  },
+    { name:'Tuesday',   hours:'7:00 AM – 8:00 PM'  },
+    { name:'Wednesday', hours:'7:00 AM – 8:00 PM'  },
+    { name:'Thursday',  hours:'7:00 AM – 8:00 PM'  },
+    { name:'Friday',    hours:'7:00 AM – 8:00 PM'  },
+    { name:'Saturday',  hours:'7:00 AM – 8:00 PM' },
   ];
   const todayIdx = new Date().getDay(); // 0=Sun,1=Mon...6=Sat
   // check if store is currently open
