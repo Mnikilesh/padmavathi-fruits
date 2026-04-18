@@ -32,6 +32,84 @@ cloudinary.config({
   secure     : true,
 });
 
+// ─── EMAIL (Nodemailer) ───────────────────────────────────────
+let nodemailer = null;
+try {
+  nodemailer = require('nodemailer');
+  console.log('[PFC] EMAIL: nodemailer loaded OK');
+} catch(e) {
+  console.error('[PFC] EMAIL: nodemailer FAILED to load —', e.message);
+}
+
+const EMAIL_FROM    = 'padmavathifruitscompany@gmail.com';
+const EMAIL_TO_LIST = ['mamidalaanand80@gmail.com', 'nikileshmamidala@gmail.com'];
+
+// Log env var presence at startup (never log the actual password)
+const _emailPass = process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_PASS || '';
+const _emailUser = process.env.EMAIL_USER || EMAIL_FROM;
+console.log('[PFC] EMAIL_USER:', _emailUser);
+console.log('[PFC] EMAIL_PASS set:', _emailPass ? 'YES (length=' + _emailPass.length + ')' : 'NO ← SET GMAIL_APP_PASSWORD in Render env vars');
+
+function createMailTransport() {
+  if (!nodemailer) { console.error('[PFC] EMAIL: nodemailer not available'); return null; }
+  if (!_emailPass) { console.error('[PFC] EMAIL: GMAIL_APP_PASSWORD not set — skipping email'); return null; }
+  return nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    auth: { user: _emailUser, pass: _emailPass },
+  });
+}
+
+async function sendOrderEmail(order) {
+  console.log('[PFC] EMAIL: attempting to send for orderId:', order.orderId);
+  const transport = createMailTransport();
+  if (!transport) { console.error('[PFC] EMAIL: transport is null — email not sent'); return; }
+
+  const itemLines = (order.items || []).map(i =>
+    `  * ${i.emoji || ''} ${i.name}${i.weightLabel ? ' - ' + i.weightLabel : ''}  x${i.quantity}  Rs.${i.subtotal?.toFixed(2) || ''}`
+  ).join('\n');
+
+  const subject = `New Order ${order.orderId} - Rs.${order.totalAmount?.toFixed(0)} | Padmavathi Fruits`;
+  const text = [
+    'New order received on Padmavathi Fruits Company!',
+    '',
+    'Order ID   : ' + order.orderId,
+    'Customer   : ' + order.customerName + '  |  ' + order.customerPhone,
+    'Payment    : ' + (order.paymentMethod || '').toUpperCase(),
+    'Status     : ' + order.status,
+    '',
+    '--- Items ---',
+    itemLines,
+    '-------------',
+    'Subtotal   : Rs.' + (order.subtotal || 0).toFixed(2),
+    'Delivery   : Rs.' + (order.deliveryFee || 0).toFixed(2),
+    'TOTAL      : Rs.' + (order.totalAmount || 0).toFixed(2),
+    '',
+    '--- Delivery Address ---',
+    order.deliveryAddress?.street || '',
+    (order.deliveryAddress?.city || 'Warangal') + ', ' + (order.deliveryAddress?.state || 'Telangana') + ' - ' + (order.deliveryAddress?.pincode || ''),
+    order.deliveryAddress?.mapsUrl ? 'Maps: ' + order.deliveryAddress.mapsUrl : '',
+    '',
+    order.orderNotes ? 'Notes: ' + order.orderNotes : '',
+    '',
+    '- Padmavathi Fruits Company',
+  ].filter(l => l !== undefined).join('\n');
+
+  try {
+    const info = await transport.sendMail({
+      from: '"Padmavathi Fruits Company" <' + EMAIL_FROM + '>',
+      to:   EMAIL_TO_LIST.join(', '),
+      subject,
+      text,
+    });
+    console.log('[PFC] ORDER_EMAIL_SENT orderId:' + order.orderId + ' messageId:' + info.messageId);
+  } catch(e) {
+    console.error('[PFC] ORDER_EMAIL_FAILED orderId:' + order.orderId + ' error:' + e.message);
+    console.error('[PFC] ORDER_EMAIL_FAILED full:', e);
+  }
+}
+
 let webpush = null;
 try {
   webpush = require('web-push');
@@ -1120,7 +1198,26 @@ async function route(method, path, event) {
     }
     const totalKgOrdered=resolved.filter(i=>!i.isJuice).reduce((s,i)=>(s+(i.weightGrams/1000)*i.quantity),0);
     if (totalKgOrdered>100) return R.bad(`Order exceeds 100kg limit.`);
-    const deliveryFee=subtotal>=300?0:40; // free delivery on orders ≥ ₹300
+
+    // ── PINCODE-BASED DELIVERY FEE ────────────────────────────
+    // Default charges (fallback if not configured in admin settings):
+    //   Warangal pincodes (506001-506015): ₹40
+    //   Hanamkonda pincodes (506001,506370-506380): ₹50
+    //   Kazipet pincodes (506003,506004): ₹60
+    const DEFAULT_PINCODE_FEES = {
+      '506001': 40, '506002': 40, '506005': 40, '506006': 40,
+      '506007': 40, '506008': 40, '506009': 40, '506010': 40,
+      '506011': 40, '506013': 40, '506015': 40,
+      '506370': 50, '506371': 50, '506372': 50,
+      '506003': 60, '506004': 60,
+    };
+    const { Settings: SettingsM } = getModels();
+    const pincodeFeeSetting = await SettingsM.findOne({ key: 'pincode_delivery_fees' }).lean();
+    const pincodeFees = (pincodeFeeSetting && typeof pincodeFeeSetting.value === 'object' && !Array.isArray(pincodeFeeSetting.value))
+      ? pincodeFeeSetting.value
+      : DEFAULT_PINCODE_FEES;
+    const orderPincode = (deliveryAddress.pincode || '').trim();
+    const deliveryFee = pincodeFees[orderPincode] !== undefined ? pincodeFees[orderPincode] : 50; // default ₹50 for unknown pincodes
 
     // ── SERVER-SIDE COUPON VALIDATION ─────────────────────────────────────
     // coupon code is optional — sent by frontend as body.coupon
@@ -1221,6 +1318,8 @@ async function route(method, path, event) {
       `${customerName} · Tap to accept`,
       { url:'/?page=driver', orderId:order.orderId }
     ).catch(()=>{});
+    // Send email to owners
+    sendOrderEmail(order).catch(e => console.error('[PFC] sendOrderEmail uncaught:', e.message));
     console.log(`[PFC] ORDER_CREATED orderId:${order.orderId} orderToken:${orderToken} userId:${auth.user._id} ip:${clientIP} amount:${totalAmount}${appliedCouponCode?' coupon:'+appliedCouponCode+' discount:'+couponDiscount:''}`);
     return R.created({ order, couponDiscount, appliedCoupon: appliedCouponCode }, 'Order placed! 🎉');
   }
@@ -1764,6 +1863,28 @@ async function route(method, path, event) {
     if (existsPhone) return R.bad('An account with this mobile number already exists.');
     const driver=await User.create({name,email,phone,password,role:'driver',vehicleType:vehicleType||'bike'});
     return R.created({driver:{_id:driver._id,name:driver.name,email:driver.email,phone:driver.phone,role:driver.role,vehicleType:driver.vehicleType}},'Driver account created.');
+  }
+
+  // ── PUBLIC: pincode delivery fee lookup ──────────────────────
+  // GET /api/delivery-fee?pincode=506002  → { fee: 40, found: true }
+  if (method==='GET' && path==='/api/delivery-fee') {
+    const pincode = (q.pincode || '').trim();
+    if (!pincode) return R.bad('pincode query param required.');
+    const { Settings: SettingsM2 } = getModels();
+    const DEFAULT_PINCODE_FEES = {
+      '506001': 40, '506002': 40, '506005': 40, '506006': 40,
+      '506007': 40, '506008': 40, '506009': 40, '506010': 40,
+      '506011': 40, '506013': 40, '506015': 40,
+      '506370': 50, '506371': 50, '506372': 50,
+      '506003': 60, '506004': 60,
+    };
+    const pincodeFeeSetting2 = await SettingsM2.findOne({ key: 'pincode_delivery_fees' }).lean();
+    const pincodeFees2 = (pincodeFeeSetting2 && typeof pincodeFeeSetting2.value === 'object' && !Array.isArray(pincodeFeeSetting2.value))
+      ? pincodeFeeSetting2.value
+      : DEFAULT_PINCODE_FEES;
+    const found = pincodeFees2[pincode] !== undefined;
+    const fee   = found ? pincodeFees2[pincode] : null;
+    return R.ok({ pincode, fee, found, message: found ? `Delivery available — ₹${fee}` : 'Pincode not in delivery area.' });
   }
 
   // ── SETTINGS: public read — no auth, used by checkout to get platformFee ──
