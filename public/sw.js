@@ -1,14 +1,14 @@
 /*
  ╔══════════════════════════════════════════════════════════════════════╗
- ║   PADMAVATHI FRUITS — Service Worker v5                             ║
- ║   FIX: chrome-extension:// TypeError resolved                       ║
+ ║   PADMAVATHI FRUITS — Service Worker v6                             ║
+ ║   FIX: API calls bypass SW completely — no duplicate DevTools entries                       ║
  ║   PERF: Network-first for API, Cache-first for assets               ║
  ╚══════════════════════════════════════════════════════════════════════╝
 */
 
-const CACHE_NAME    = 'pfc-v5';
-const STATIC_CACHE  = 'pfc-static-v5';
-const API_CACHE     = 'pfc-api-v5';
+const CACHE_NAME    = 'pfc-v6';
+const STATIC_CACHE  = 'pfc-static-v6';
+const API_CACHE     = 'pfc-api-v6';
 
 // ─── Assets to pre-cache on install ────────────────────────────────
 const PRECACHE_URLS = [
@@ -62,17 +62,12 @@ self.addEventListener('fetch', event => {
                        url.includes('fonts.gstatic.com') ||
                        url.includes('cdnjs.cloudflare.com');
 
-  // ─── API routes: Network-first, no caching ──────────────────────
-  // Prevents stale product/price data being served from cache
+  // ─── API routes: bypass SW completely ───────────────────────────
+  // Do NOT call event.respondWith() — let the browser handle API calls
+  // directly. Using respondWith(fetch(request)) adds an unnecessary SW
+  // layer that shows every API call twice in DevTools (index + sw.js).
   if (url.includes('/api/') || url.includes('/.netlify/functions/')) {
-    event.respondWith(
-      fetch(event.request)
-        .catch(() => new Response(
-          JSON.stringify({ ok: false, message: 'You are offline. Please check your connection.' }),
-          { headers: { 'Content-Type': 'application/json' } }
-        ))
-    );
-    return;
+    return; // SW steps aside — browser → backend directly
   }
 
   // ─── Fonts & CDN: Cache-first (long-lived, never changes) ────────

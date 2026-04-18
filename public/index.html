@@ -4960,7 +4960,12 @@ body.on-admin   #floatingCartBar { display: none !important; }
 
 <script>
 // ── SINGLE BACKEND ────────────────────────────────────────────
-const API = 'https://padmavathi-fruits.onrender.com/api';
+// ── API base URL — auto-detects local vs production ─────────────────
+// When running locally (localhost or 127.0.0.1), points to local backend.
+// In production (Cloudflare/Netlify), points to Render.
+const API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  ? 'http://localhost:10000/api'
+  : 'https://padmavathi-fruits.onrender.com/api';
 
 // Simple fetch helper — always hits Render backend
 async function fetchWithFallback(path) {

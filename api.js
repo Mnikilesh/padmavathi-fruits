@@ -463,6 +463,13 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '')
     'https://padmavathifruits.netlify.app',
     'https://padmavathifruits.in',
     'https://www.padmavathifruits.in',
+    // Local development — never reaches production since Render runs on 10000
+    'http://localhost:10000',
+    'http://localhost:3000',
+    'http://localhost:5500',
+    'http://127.0.0.1:10000',
+    'http://127.0.0.1:3000',
+    'http://127.0.0.1:5500',
   ]);
 
 function corsHeaders(origin) {
@@ -939,7 +946,10 @@ async function route(method, path, event) {
     if (record.otp!==otp) return R.bad('Invalid code.');
     const user=await User.findOne({email:email.toLowerCase()});
     if (!user) return R.bad('User not found.');
-    user.password=await bcrypt.hash(newPassword,12);
+    // Assign plain text — userSchema.pre('save') handles hashing.
+    // Do NOT manually bcrypt.hash here or the password gets double-hashed
+    // (hash-of-hash) and every subsequent login will fail with 'invalid password'.
+    user.password = newPassword;
     await user.save(); resetOtps.delete(email.toLowerCase());
     return R.ok({},'Password reset successfully.');
   }
@@ -1710,16 +1720,41 @@ async function route(method, path, event) {
     if (auth.err) return auth.err;
     if (auth.user.role!=='admin') return R.noauth('Admin only.');
     const id=path.split('/')[4];
-    if (!isValidObjectId(id)) return R.bad('Invalid driver ID.');
+    if (!isValidObjectId(id)) return R.bad('Invalid user ID.');
     const u=await User.findById(id);
-    if (!u) return R.nf();
+    if (!u) return R.nf('User not found.');
     if (u.role==='admin') return R.bad('Cannot edit admin accounts here.');
     const {name,phone,password}=body;
     if (name)  u.name=name.trim();
     if (phone) u.phone=phone.trim();
-    if (password&&password.length>=8) u.password=password;
+    if (password && password.length < 8) return R.bad('Password must be at least 8 characters.');
+    if (password && password.length >= 8) {
+      u.password = password; // pre-save hook hashes it correctly
+      u.refreshTokens = [];  // invalidate all sessions
+      _invalidateUserCache(u._id);
+    }
     await u.save();
-    return R.ok({user:{_id:u._id,name:u.name,email:u.email,phone:u.phone,isActive:u.isActive}},'Driver updated.');
+    return R.ok({user:{_id:u._id,name:u.name,email:u.email,phone:u.phone,role:u.role,isActive:u.isActive}},'User updated.');
+  }
+
+  // Admin: reset any user password directly (no OTP — admin privilege)
+  if (method==='POST' && /^\/api\/admin\/users\/[^\/]+\/reset-password$/.test(path)) {
+    const auth=await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role!=='admin') return R.noauth('Admin only.');
+    const id=path.split('/')[4];
+    if (!isValidObjectId(id)) return R.bad('Invalid user ID.');
+    const {newPassword}=body;
+    if (!newPassword || newPassword.length<8) return R.bad('New password must be at least 8 characters.');
+    const u=await User.findById(id);
+    if (!u) return R.nf('User not found.');
+    if (u.role==='admin') return R.bad('Cannot reset admin passwords via this endpoint.');
+    u.password = newPassword; // pre-save hook hashes it
+    u.refreshTokens = [];     // force logout from all devices
+    _invalidateUserCache(u._id);
+    await u.save();
+    console.log('[PFC] ADMIN_PASSWORD_RESET userId:'+id+' by admin:'+auth.user._id);
+    return R.ok({}, 'Password reset. User has been logged out of all devices.');
   }
 
   if (method==='DELETE' && /^\/api\/admin\/users\/[^\/]+$/.test(path)) {
