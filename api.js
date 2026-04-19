@@ -1246,6 +1246,19 @@ async function route(method, path, event) {
     return R.ok({review},'Review updated!');
   }
 
+  // GET /api/reviews/home — public, returns top reviews (rating>=4, approved) for homepage
+  if (method==='GET' && path==='/api/reviews/home') {
+    const { Review: ReviewM, Fruit: FruitM } = getModels();
+    const limit = Math.min(20, parseInt(q.limit)||12);
+    const reviews = await ReviewM.find({ isApproved: true, rating: { $gte: 4 } })
+      .populate('user', 'name')
+      .populate('fruit', 'name emoji')
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+    return R.ok({ reviews });
+  }
+
   if (method==='PATCH' && /^\/api\/fruits\/[^/]+$/.test(path)) {
     const auth=await authenticate(event.headers);
     if (auth.err) return auth.err;

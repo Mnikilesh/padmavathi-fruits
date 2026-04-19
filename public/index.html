@@ -3367,30 +3367,13 @@ body.on-admin   #floatingCartBar { display: none !important; }
         <div class="acard"><div class="acard-icon"><i data-lucide="shield-check"></i></div><h3>Trusted Legacy</h3><p>Three generations of Warangal families trust us.</p></div>
       </div>
 
-      <!-- Testimonials -->
-      <div style="margin-top:var(--sp4)">
+      <!-- Testimonials — dynamically loaded from real user reviews (rating >= 4) -->
+      <div style="margin-top:var(--sp4)" id="homeReviewsSection">
         <h3 style="text-align:center;font-family:var(--font-head);font-size:22px;color:var(--g);margin-bottom:6px">What Our Customers Say</h3>
-        <p style="text-align:center;font-size:13px;color:var(--muted);margin-bottom:var(--sp3)">Real reviews from Warangal families</p>
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--sp2)">
-          <div class="testimonial-card">
-            <div class="tc-stars"><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg></div>
-            <p class="tc-text">"Best quality fruits in Warangal! The mangoes were so fresh and sweet. My kids absolutely loved them. Will order again!"</p>
-            <div class="tc-author"><div class="tc-avatar">P</div><div><div class="tc-name">Priya Reddy</div><div class="tc-loc">Hanamkonda</div></div></div>
-          </div>
-          <div class="testimonial-card">
-            <div class="tc-stars"><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg></div>
-            <p class="tc-text">"25 years and still the best. Honest weighing, fresh fruits every day. I trust Padmavathi more than any supermarket."</p>
-            <div class="tc-author"><div class="tc-avatar">R</div><div><div class="tc-name">Ravi Kumar</div><div class="tc-loc">Warangal Urban</div></div></div>
-          </div>
-          <div class="testimonial-card">
-            <div class="tc-stars"><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#E5E7EB" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg></div>
-            <p class="tc-text">"Ordered for my daughter's wedding function — 50kg of mixed fruits. Delivery was on time, pricing was very fair. Highly recommend!"</p>
-            <div class="tc-author"><div class="tc-avatar">S</div><div><div class="tc-name">vijay Rao</div><div class="tc-loc">Kazipet</div></div></div>
-          </div>
-          <div class="testimonial-card">
-            <div class="tc-stars"><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg><svg viewBox="0 0 20 20" fill="#F59E0B" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg></div>
-            <p class="tc-text">"The watermelon was huge and perfectly ripe. Online ordering is so convenient. The app is very easy to use!"</p>
-            <div class="tc-author"><div class="tc-avatar">M</div><div><div class="tc-name">Mahesh Varma</div><div class="tc-loc">Warangal</div></div></div>
+        <p style="text-align:center;font-size:13px;color:var(--muted);margin-bottom:var(--sp3)" id="homeReviewsSubtitle">Real reviews from Warangal families</p>
+        <div id="homeReviewsGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:var(--sp2)">
+          <div style="grid-column:1/-1;text-align:center;padding:32px 16px;color:var(--muted);font-size:13px">
+            <div class="spinner" style="margin:0 auto 12px"></div>Loading reviews…
           </div>
         </div>
       </div>
@@ -6402,6 +6385,75 @@ function renderShopFruits(data) {
   grid.innerHTML = '';
   data.forEach(f => grid.appendChild(makeFruitCard(f)));
 }
+
+// ── Home page reviews: loads real user reviews (rating >= 4) from server ──
+async function loadHomeReviews() {
+  const grid     = document.getElementById('homeReviewsGrid');
+  const subtitle = document.getElementById('homeReviewsSubtitle');
+  if (!grid) return;
+
+  // Star SVG builder
+  function starSVG(filled) {
+    const color = filled ? '#F59E0B' : '#E5E7EB';
+    return '<svg viewBox="0 0 20 20" fill="' + color + '" style="width:14px;height:14px;display:inline"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>';
+  }
+  function starsHtml(rating) {
+    let s = '';
+    for (let i = 1; i <= 5; i++) s += starSVG(i <= rating);
+    return s;
+  }
+
+  try {
+    const r = await http('GET', '/reviews/home', null, true, true); // skipAuth + skipGuard (public, background)
+    const reviews = r.ok ? (r.reviews || []) : [];
+
+    if (!reviews.length) {
+      // Empty state — invite users to review
+      grid.innerHTML =
+        '<div style="grid-column:1/-1;text-align:center;padding:40px 20px">' +
+          '<div style="font-size:48px;margin-bottom:12px">⭐</div>' +
+          '<div style="font-family:var(--font-head);font-size:18px;color:var(--g);margin-bottom:8px">Be the first to review!</div>' +
+          '<div style="font-size:14px;color:var(--muted)">Order fruits and rate your experience. ⭐</div>' +
+        '</div>';
+      if (subtitle) subtitle.textContent = 'Be the first — share your experience!';
+      return;
+    }
+
+    if (subtitle) subtitle.textContent = 'Real reviews from Warangal families';
+
+    grid.innerHTML = reviews.map(function(rv) {
+      const name    = (rv.user && rv.user.name) ? rv.user.name : 'Customer';
+      const initial = name.trim()[0].toUpperCase();
+      const fruit   = (rv.fruit && rv.fruit.name) ? rv.fruit.name : '';
+      const emoji   = (rv.fruit && rv.fruit.emoji) ? rv.fruit.emoji : '🍎';
+      const comment = rv.comment ? ('"' + rv.comment + '"') : '(No comment)';
+      const date    = rv.createdAt ? new Date(rv.createdAt).toLocaleDateString('en-IN', { month:'short', year:'numeric' }) : '';
+      const fruitTag = fruit
+        ? '<span style="font-size:10px;background:var(--gp2);color:var(--gm);border-radius:10px;padding:2px 7px;font-weight:600;margin-left:4px">' + emoji + ' ' + fruit + '</span>'
+        : '';
+      return '<div class="testimonial-card">' +
+        '<div class="tc-stars" style="display:flex;align-items:center;gap:2px;margin-bottom:8px">' + starsHtml(rv.rating) + fruitTag + '</div>' +
+        '<p class="tc-text" style="font-size:14px;color:var(--text2);line-height:1.6;margin-bottom:12px">' + comment + '</p>' +
+        '<div class="tc-author">' +
+          '<div class="tc-avatar" style="background:var(--g);color:#fff;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0">' + initial + '</div>' +
+          '<div>' +
+            '<div class="tc-name" style="font-weight:700;font-size:13px;color:var(--text)">' + name + '</div>' +
+            (date ? '<div class="tc-loc" style="font-size:11px;color:var(--muted)">' + date + '</div>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    // Silently fail — don't break the home page if reviews can't load
+    grid.innerHTML =
+      '<div style="grid-column:1/-1;text-align:center;padding:40px 20px">' +
+        '<div style="font-size:48px;margin-bottom:12px">⭐</div>' +
+        '<div style="font-family:var(--font-head);font-size:18px;color:var(--g);margin-bottom:8px">Be the first to review!</div>' +
+        '<div style="font-size:14px;color:var(--muted)">Order fruits and rate your experience. ⭐</div>' +
+      '</div>';
+  }
+}
+
 
 function renderHomeFruits() {
   const grid = document.getElementById('homeFruitGrid');
@@ -10367,6 +10419,8 @@ async function submitAllRatings() {
     const verb = ratingItems.some(i => i.existingRating > 0) ? 'updated' : 'submitted';
     toast(successCount + ' review' + (successCount > 1 ? 's' : '') + ' ' + verb + ' — thank you!');
     closeRatingModal();
+    // Refresh home page testimonials if a high-rated review was just submitted
+    setTimeout(loadHomeReviews, 800);
     // OPT: Removed full GET /fruits?limit=100 refetch that was here previously.
     // Only averageRating on the reviewed fruit(s) changed — the rest of the catalog
     // is identical.  The 5-minute sessionStorage cache will naturally expire and
@@ -16572,6 +16626,7 @@ async function init() {
   buildCatBar();
   updateCartCount();
   loadPlatformFeeFromServer(); // sync platform fee from MongoDB on every page load
+  loadHomeReviews(); // load real user reviews (rating>=4) for homepage testimonials section
 
   // ── BOOTSTRAP SESSION LOCK ────────────────────────────────────
   // /api/bootstrap is called AT MOST ONCE per session (30-minute window).
