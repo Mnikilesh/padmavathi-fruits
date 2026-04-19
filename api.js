@@ -167,7 +167,7 @@ try {
   webpush = require('web-push');
   const pub  = (process.env.VAPID_PUBLIC_KEY  || '').replace(/=+$/, '');
   const priv = (process.env.VAPID_PRIVATE_KEY || '').replace(/=+$/, '');
-  if (pub && priv) { webpush.setVapidDetails('mailto:admin@padmavathifruits.in', pub, priv); }
+  if (pub && priv) { webpush.setVapidDetails('mailto:padmavathifruitscompany@gmail.com', pub, priv); }
   else { webpush = null; }
 } catch (_) { webpush = null; }
 
@@ -294,6 +294,18 @@ const orderSchema = new mongoose.Schema({
   driverLat:               Number,
   driverLng:               Number,
   driverLocationUpdatedAt: Date,
+  // ── Admin override audit trail ────────────────────────────
+  isAdminModified:  { type:Boolean, default:false },
+  adminModifications: [{
+    modifiedBy:   { type:mongoose.Schema.Types.ObjectId, ref:'User' },
+    modifiedByEmail: String,
+    reason:       String,
+    originalItems:   mongoose.Schema.Types.Mixed,
+    originalTotal:   Number,
+    originalStatus:  String,
+    changes:         mongoose.Schema.Types.Mixed,
+    timestamp:    { type:Date, default:Date.now },
+  }],
 }, { timestamps:true });
 
 orderSchema.pre('save', function(next) {
@@ -360,7 +372,18 @@ const juiceSchema = new mongoose.Schema({
   isDeleted:       { type:Boolean, default:false },
 }, { timestamps:true });
 
-// ── Basket / Bundle schema ────────────────────────────────────
+// ── Admin Password Change Log ────────────────────────────────
+const adminPasswordLogSchema = new mongoose.Schema({
+  targetUserId:  { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true },
+  targetEmail:   String,
+  adminId:       { type:mongoose.Schema.Types.ObjectId, ref:'User', required:true },
+  adminEmail:    String,
+  action:        { type:String, default:'password_reset' },
+  timestamp:     { type:Date, default:Date.now },
+  ip:            String,
+}, { timestamps:true });
+
+
 const basketSchema = new mongoose.Schema({
   name:      { type:String, required:true, trim:true },
   desc:      String,
@@ -443,6 +466,7 @@ function getModels() {
     Juice:       mongoose.models.Juice       || mongoose.model('Juice',       juiceSchema),
     Basket:      mongoose.models.Basket      || mongoose.model('Basket',      basketSchema),
     OfflineSale: mongoose.models.OfflineSale || mongoose.model('OfflineSale', offlineSaleSchema),
+    AdminPasswordLog: mongoose.models.AdminPasswordLog || mongoose.model('AdminPasswordLog', adminPasswordLogSchema),
   };
 }
 
@@ -2258,6 +2282,438 @@ async function route(method, path, event) {
     const sale = await OfflineSale.findOneAndDelete({ $or: [{ _id: isValidObjectId(id)?id:null }, { saleId: id }] });
     if (!sale) return R.nf('Sale not found.');
     return R.ok({}, 'Sale deleted.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  FEATURE 1: PRODUCT DISCOUNT MANAGEMENT
+  //  PATCH /api/admin/fruits/:id/discount
+  //  PATCH /api/admin/juices/:id/discount
+  // ══════════════════════════════════════════════════════════
+
+  // Admin: set discount on a fruit (originalPrice + discountPercentage OR discountPrice)
+  if (method==='PATCH' && /^\/api\/admin\/fruits\/[^/]+\/discount$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Fruit } = getModels();
+    const id = path.split('/')[4];
+    if (!isValidObjectId(id)) return R.bad('Invalid fruit ID.');
+    const fruit = await Fruit.findById(id);
+    if (!fruit || fruit.isDeleted) return R.nf('Fruit not found.');
+
+    let { originalPrice, discountPercentage, discountPrice } = body;
+    originalPrice = originalPrice !== undefined ? +originalPrice : null;
+    discountPercentage = discountPercentage !== undefined ? +discountPercentage : null;
+    discountPrice = discountPrice !== undefined ? +discountPrice : null;
+
+    // Determine base price and discount %
+    const basePrice = originalPrice !== null ? originalPrice : fruit.price;
+    if (basePrice <= 0) return R.bad('Original price must be positive.');
+
+    let finalDiscountPct = 0;
+    if (discountPercentage !== null) {
+      if (discountPercentage < 0 || discountPercentage > 90) return R.bad('Discount % must be 0–90.');
+      finalDiscountPct = discountPercentage;
+    } else if (discountPrice !== null) {
+      if (discountPrice < 0) return R.bad('Discount price cannot be negative.');
+      if (discountPrice >= basePrice) return R.bad('Discount price must be less than original price.');
+      finalDiscountPct = parseFloat(((1 - discountPrice / basePrice) * 100).toFixed(2));
+      if (finalDiscountPct > 90) return R.bad('Computed discount exceeds 90%. Check values.');
+    }
+
+    // Validate: final price must not be negative or zero
+    const computedFinalPrice = parseFloat((basePrice * (1 - finalDiscountPct / 100)).toFixed(2));
+    if (computedFinalPrice <= 0) return R.bad('Discount makes price zero or negative.');
+
+    fruit.price = basePrice;
+    fruit.discountPercent = finalDiscountPct;
+    await fruit.save();
+
+    const response = {
+      _id: fruit._id,
+      name: fruit.name,
+      originalPrice: basePrice,
+      discountPercent: finalDiscountPct,
+      finalPrice: computedFinalPrice,
+      savings: parseFloat((basePrice - computedFinalPrice).toFixed(2)),
+    };
+    console.log(`[PFC] DISCOUNT_SET fruitId:${id} originalPrice:${basePrice} discountPct:${finalDiscountPct} finalPrice:${computedFinalPrice} by admin:${auth.user._id}`);
+    return R.ok({ fruit: response }, 'Discount applied. Final price computed on backend.');
+  }
+
+  // Admin: set discount on a juice
+  if (method==='PATCH' && /^\/api\/admin\/juices\/[^/]+\/discount$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const id = path.split('/')[4];
+    if (!isValidObjectId(id)) return R.bad('Invalid juice ID.');
+    const juice = await Juice.findById(id);
+    if (!juice || juice.isDeleted) return R.nf('Juice not found.');
+
+    let { originalPrice, discountPercentage, discountPrice } = body;
+    originalPrice = originalPrice !== undefined ? +originalPrice : null;
+    discountPercentage = discountPercentage !== undefined ? +discountPercentage : null;
+    discountPrice = discountPrice !== undefined ? +discountPrice : null;
+
+    const basePrice = originalPrice !== null ? originalPrice : juice.price;
+    if (basePrice <= 0) return R.bad('Original price must be positive.');
+
+    let finalDiscountPct = 0;
+    if (discountPercentage !== null) {
+      if (discountPercentage < 0 || discountPercentage > 90) return R.bad('Discount % must be 0–90.');
+      finalDiscountPct = discountPercentage;
+    } else if (discountPrice !== null) {
+      if (discountPrice < 0) return R.bad('Discount price cannot be negative.');
+      if (discountPrice >= basePrice) return R.bad('Discount price must be less than original price.');
+      finalDiscountPct = parseFloat(((1 - discountPrice / basePrice) * 100).toFixed(2));
+      if (finalDiscountPct > 90) return R.bad('Computed discount exceeds 90%.');
+    }
+
+    const computedFinalPrice = parseFloat((basePrice * (1 - finalDiscountPct / 100)).toFixed(2));
+    if (computedFinalPrice <= 0) return R.bad('Discount makes price zero or negative.');
+
+    juice.price = basePrice;
+    juice.discountPercent = finalDiscountPct;
+    await juice.save();
+
+    console.log(`[PFC] JUICE_DISCOUNT_SET juiceId:${id} originalPrice:${basePrice} discountPct:${finalDiscountPct} by admin:${auth.user._id}`);
+    return R.ok({
+      juice: { _id:juice._id, name:juice.name, originalPrice:basePrice,
+               discountPercent:finalDiscountPct, finalPrice:computedFinalPrice }
+    }, 'Juice discount applied.');
+  }
+
+  // Admin: remove discount from fruit
+  if (method==='DELETE' && /^\/api\/admin\/fruits\/[^/]+\/discount$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Fruit } = getModels();
+    const id = path.split('/')[4];
+    if (!isValidObjectId(id)) return R.bad('Invalid fruit ID.');
+    await Fruit.findByIdAndUpdate(id, { discountPercent: 0 });
+    return R.ok({}, 'Discount removed.');
+  }
+
+  // Admin: remove discount from juice
+  if (method==='DELETE' && /^\/api\/admin\/juices\/[^/]+\/discount$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Juice } = getModels();
+    const id = path.split('/')[4];
+    if (!isValidObjectId(id)) return R.bad('Invalid juice ID.');
+    await Juice.findByIdAndUpdate(id, { discountPercent: 0 });
+    return R.ok({}, 'Discount removed.');
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  FEATURE 2: ADMIN PASSWORD CONTROL
+  //  POST /api/admin/users/reset-password  (search by email/ID)
+  //  GET  /api/admin/password-logs
+  // ══════════════════════════════════════════════════════════
+
+  // Admin: reset password by email or ID (with full audit log)
+  if (method==='POST' && path==='/api/admin/users/reset-password') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { AdminPasswordLog, User } = getModels();
+    const { identifier, newPassword } = body;  // identifier = email or userId
+    if (!identifier) return R.bad('Provide user email or ID.');
+    if (!newPassword || newPassword.length < 8) return R.bad('New password must be at least 8 characters.');
+
+    // Find user by email or ID
+    let u;
+    if (isValidObjectId(identifier)) {
+      u = await User.findById(identifier);
+    } else {
+      u = await User.findOne({ email: String(identifier).toLowerCase().trim() });
+    }
+    if (!u) return R.nf('User not found with that email or ID.');
+    if (u.role === 'admin') return R.bad('Cannot reset admin passwords via this endpoint.');
+
+    // Hash password via bcrypt (pre-save hook also hashes — but we do it explicitly for clarity)
+    const hashedPassword = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    u.password = hashedPassword;
+    u.refreshTokens = [];  // force logout from all devices
+    u.markModified('password');
+    await u.save({ validateBeforeSave: false });
+    _invalidateUserCache(u._id);
+
+    // Audit log
+    const ip = getIP(event);
+    await AdminPasswordLog.create({
+      targetUserId: u._id,
+      targetEmail:  u.email,
+      adminId:      auth.user._id,
+      adminEmail:   auth.user.email,
+      action:       'password_reset',
+      ip,
+      timestamp:    new Date(),
+    });
+    console.log(`[PFC] ADMIN_PWD_RESET targetUser:${u._id}(${u.email}) by admin:${auth.user._id} ip:${ip}`);
+    return R.ok({
+      userId: u._id,
+      email:  u.email,
+      name:   u.name,
+    }, 'Password reset. User logged out of all devices.');
+  }
+
+  // Admin: search user by email or ID (for password reset UI)
+  if (method==='GET' && path==='/api/admin/users/search') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { User } = getModels();
+    const { q: query } = q;  // ?q=email@example.com or ?q=userId
+    if (!query) return R.bad('Provide search query.');
+    let filter;
+    if (isValidObjectId(query)) {
+      filter = { _id: query };
+    } else {
+      filter = { $or: [
+        { email: { $regex: String(query).trim(), $options: 'i' } },
+        { name:  { $regex: String(query).trim(), $options: 'i' } },
+        { phone: { $regex: String(query).trim(), $options: 'i' } },
+      ]};
+    }
+    const users = await User.find(filter).select('name email phone role isActive createdAt').limit(10).lean();
+    return R.ok({ users });
+  }
+
+  // Admin: view password change audit logs
+  if (method==='GET' && path==='/api/admin/password-logs') {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { AdminPasswordLog } = getModels();
+    const page  = Math.max(1, +q.page || 1);
+    const limit = Math.min(100, +q.limit || 20);
+    const [logs, total] = await Promise.all([
+      AdminPasswordLog.find({}).sort({ timestamp: -1 }).skip((page-1)*limit).limit(limit).lean(),
+      AdminPasswordLog.countDocuments({}),
+    ]);
+    return R.ok({ logs, total, page, pages: Math.ceil(total / limit) });
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  FEATURE 3: ADMIN ORDER OVERRIDE SYSTEM
+  //  PATCH /api/orders/admin/:orderId/override
+  //  POST  /api/orders/admin/:orderId/cancel-override
+  //  GET   /api/admin/order-audit/:orderId
+  // ══════════════════════════════════════════════════════════
+
+  // Admin: full order override — edit items, qty, price, status with audit log
+  if (method==='PATCH' && /^\/api\/orders\/admin\/[^/]+\/override$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Order, Fruit } = getModels();
+    const orderId = path.split('/')[4];
+    const { items, status, reason, notes } = body;
+
+    if (!reason || reason.trim().length < 5) return R.bad('A reason (min 5 chars) is required for order override.');
+
+    const order = await Order.findOne({ orderId }).populate('user', 'name email phone');
+    if (!order) return R.nf('Order not found.');
+    if (order.status === 'delivered') return R.bad('Cannot modify a delivered order.');
+
+    // Snapshot original state for audit
+    const originalItems  = JSON.parse(JSON.stringify(order.items));
+    const originalTotal  = order.totalAmount;
+    const originalStatus = order.status;
+    const changes = {};
+
+    // ── Validate and apply item overrides ──────────────────
+    if (Array.isArray(items) && items.length > 0) {
+      const resolvedItems = [];
+      for (const it of items) {
+        // Basic validation
+        if (!it.name) return R.bad('Each item must have a name.');
+        const qty = +it.quantity || 1;
+        if (qty < 1) return R.bad(`Quantity for ${it.name} must be at least 1.`);
+        const pricePerKg = +it.pricePerKg;
+        if (!pricePerKg || pricePerKg <= 0) return R.bad(`Invalid pricePerKg for ${it.name}.`);
+        const weightGrams = +it.weightGrams || 500;
+        if (weightGrams <= 0 || weightGrams > 50000) return R.bad(`Invalid weight for ${it.name}.`);
+
+        // Stock validation (only for fruit items with a fruit ID)
+        if (it.fruit && isValidObjectId(it.fruit)) {
+          const fruit = await Fruit.findById(it.fruit).lean();
+          const requiredKg = (weightGrams / 1000) * qty;
+          if (fruit && fruit.stock < requiredKg && fruit.stock >= 0) {
+            console.warn(`[PFC] OVERRIDE_LOW_STOCK fruitId:${it.fruit} required:${requiredKg}kg available:${fruit.stock}kg`);
+            // Allow override but log warning — admin may know stock is incoming
+          }
+        }
+
+        const subtotal = parseFloat((pricePerKg * (weightGrams / 1000) * qty).toFixed(2));
+        resolvedItems.push({
+          fruit: it.fruit || undefined,
+          isJuice: it.isJuice || false,
+          juiceId: it.juiceId || undefined,
+          name: it.name.trim(),
+          emoji: it.emoji || '🍎',
+          variety: it.variety || '',
+          pricePerKg,
+          weightGrams,
+          weightLabel: it.weightLabel || `${weightGrams}g`,
+          quantity: qty,
+          subtotal,
+        });
+      }
+
+      // Backend recalculates total — frontend never does this
+      const newSubtotal = parseFloat(resolvedItems.reduce((s, i) => s + i.subtotal, 0).toFixed(2));
+      const newTotal    = parseFloat((newSubtotal + (order.deliveryFee || 0)).toFixed(2));
+      if (newTotal <= 0) return R.bad('Override would make order total zero or negative.');
+
+      order.items      = resolvedItems;
+      order.subtotal   = newSubtotal;
+      order.totalAmount = newTotal;
+      changes.items    = resolvedItems;
+      changes.subtotal = newSubtotal;
+      changes.totalAmount = newTotal;
+    }
+
+    // ── Status override ────────────────────────────────────
+    if (status && status !== originalStatus) {
+      const validStatuses = ['placed','confirmed','packed','out_for_delivery','dispatched','delivered','cancelled'];
+      if (!validStatuses.includes(status)) return R.bad('Invalid status.');
+      order.status = status;
+      changes.status = status;
+      if (status === 'cancelled') {
+        order.cancellationReason = reason;
+        order.cancelledAt = new Date();
+      }
+    }
+
+    // ── Notes ──────────────────────────────────────────────
+    if (notes) {
+      order.orderNotes = (order.orderNotes || '') + ` [Admin override: ${notes}]`;
+      changes.notes = notes;
+    }
+
+    // ── Mark as admin-modified ─────────────────────────────
+    order.isAdminModified = true;
+    order.adminModifications.push({
+      modifiedBy:      auth.user._id,
+      modifiedByEmail: auth.user.email,
+      reason:          reason.trim(),
+      originalItems,
+      originalTotal,
+      originalStatus,
+      changes,
+      timestamp:       new Date(),
+    });
+
+    await order.save();
+
+    // ── Notify user via push ────────────────────────────────
+    sendPushToUser(
+      order.user,
+      '⚠️ Order Updated — ' + order.orderId,
+      'Your order was modified by admin. Reason: ' + reason.trim(),
+      { url: '/?page=profile', orderId: order.orderId }
+    ).catch(() => {});
+
+    // ── Notify user via email ──────────────────────────────
+    (async () => {
+      try {
+        const transport = createMailTransport();
+        if (!transport) return;
+        const newTotal = order.totalAmount;
+        const itemLines = (order.items || []).map(i =>
+          `  * ${i.emoji||''} ${i.name} x${i.quantity}  ₹${i.subtotal?.toFixed(2)||''}`
+        ).join('\n');
+        await transport.sendMail({
+          from: `"Padmavathi Fruits Company" <${EMAIL_FROM}>`,
+          to:   order.customerEmail || '',
+          subject: `⚠️ Your Order ${order.orderId} was Modified`,
+          text: [
+            `Dear ${order.customerName || 'Customer'},`,
+            '',
+            'Your order has been modified by our team.',
+            `Reason: ${reason.trim()}`,
+            '',
+            '--- Updated Items ---',
+            itemLines,
+            '--------------------',
+            `New Total: ₹${newTotal?.toFixed(2)}`,
+            '',
+            'If you have questions, reply to this email or call us.',
+            '',
+            '— Padmavathi Fruits Company',
+          ].join('\n'),
+        });
+        console.log(`[PFC] OVERRIDE_EMAIL_SENT orderId:${orderId}`);
+      } catch(e) {
+        console.error('[PFC] OVERRIDE_EMAIL_FAILED:', e.message);
+      }
+    })();
+
+    console.log(`[PFC] ORDER_OVERRIDE orderId:${orderId} by admin:${auth.user._id} reason:"${reason}" changes:${JSON.stringify(Object.keys(changes))}`);
+    return R.ok({ order, changes, auditEntry: order.adminModifications[order.adminModifications.length - 1] },
+      'Order overridden. User notified. Audit log recorded.');
+  }
+
+  // Admin: cancel order with override reason (distinct from user cancel)
+  if (method==='POST' && path.match(/^\/api\/orders\/admin\/[^/]+\/cancel-override$/)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Order, Fruit } = getModels();
+    const orderId = path.split('/')[4];
+    const { reason } = body;
+    if (!reason || reason.trim().length < 5) return R.bad('Cancellation reason required (min 5 chars).');
+
+    const order = await Order.findOne({ orderId });
+    if (!order) return R.nf('Order not found.');
+    if (order.status === 'delivered') return R.bad('Cannot cancel a delivered order.');
+    if (order.status === 'cancelled') return R.bad('Order is already cancelled.');
+
+    const originalStatus = order.status;
+    order.status = 'cancelled';
+    order.cancellationReason = `Admin: ${reason.trim()}`;
+    order.cancelledAt = new Date();
+    order.isAdminModified = true;
+    order.adminModifications.push({
+      modifiedBy:      auth.user._id,
+      modifiedByEmail: auth.user.email,
+      reason:          reason.trim(),
+      originalStatus,
+      changes:         { status: 'cancelled' },
+      timestamp:       new Date(),
+    });
+
+    await order.save();
+
+    // Restore stock
+    for (const it of order.items) {
+      if (it.fruit && !it.isJuice) {
+        const restoreKg = (it.weightGrams / 1000) * it.quantity;
+        await Fruit.findByIdAndUpdate(it.fruit, { $inc: { stock: restoreKg, totalSold: -restoreKg } });
+      }
+    }
+
+    sendPushToUser(order.user, '❌ Order Cancelled — ' + orderId, `Reason: ${reason.trim()}`, {}).catch(() => {});
+    console.log(`[PFC] ADMIN_ORDER_CANCEL orderId:${orderId} by admin:${auth.user._id} reason:"${reason}"`);
+    return R.ok({ order }, 'Order cancelled by admin. Stock restored.');
+  }
+
+  // Admin: view audit log for a specific order
+  if (method==='GET' && /^\/api\/admin\/order-audit\/[^/]+$/.test(path)) {
+    const auth = await authenticate(event.headers);
+    if (auth.err) return auth.err;
+    if (auth.user.role !== 'admin') return R.noauth('Admin only.');
+    const { Order } = getModels();
+    const orderId = path.split('/').pop();
+    const order = await Order.findOne({ orderId }).select('orderId isAdminModified adminModifications statusHistory items totalAmount status').lean();
+    if (!order) return R.nf('Order not found.');
+    return R.ok({ orderId: order.orderId, isAdminModified: order.isAdminModified, modifications: order.adminModifications || [], statusHistory: order.statusHistory });
   }
 
   // ── NOT FOUND ─────────────────────────────────────────────────
