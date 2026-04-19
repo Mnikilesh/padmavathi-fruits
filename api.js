@@ -777,8 +777,17 @@ async function route(method, path, event) {
   const q = event.queryStringParameters || {};
 
   // ── RATE LIMIT: route-aware per-IP limits ─────────────────────
+  // Admins are fully exempt — they manage the catalog and need unrestricted access.
   const clientIP = getIP(event);
-  if (!rateLimit(clientIP, path)) {
+  const _authHeader = event.headers.authorization || event.headers.Authorization || event.headers.AUTHORIZATION || '';
+  let _isAdmin = false;
+  if (_authHeader.startsWith('Bearer ')) {
+    try {
+      const _dec = jwt.verify(_authHeader.split(' ')[1], JWT_SECRET, { issuer: 'pfc' });
+      if (_dec && _dec.role === 'admin') _isAdmin = true;
+    } catch(_) {}
+  }
+  if (!_isAdmin && !rateLimit(clientIP, path)) {
     return R.json({ success: false, message: 'Too many requests. Please wait a few seconds and try again.' }, 429);
   }
   
