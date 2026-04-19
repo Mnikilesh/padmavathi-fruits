@@ -8309,31 +8309,29 @@ async function placeOrder() {
   const _pfee  = getPlatformFee();
   const _total = parseFloat((_sub - _disc + _del + _pfee).toFixed(2));
 
-  // ── Juice-only: no server call needed ────────────────────
-  if (!fruitItems.length) {
-    btn.textContent = 'Place Order'; btn.disabled = false;
-    await resetCartAndSuccess('#PFC-' + Math.floor(10000 + Math.random() * 90000));
-    return;
-  }
-
-
-  // ── PRE-CHECKOUT PRICE & STOCK REFRESH ──────────────────────────────────────
-  // Force-fetch the latest catalog before building the payload.
-  // If any price changed, abort and warn the user rather than proceeding silently.
+  // ── PRE-CHECKOUT PRICE, STOCK & JUICE AVAILABILITY REFRESH ─────────────────
+  // Fetch fresh catalog from server — bypasses Cloudflare cache via Cache-Control.
+  // Validates fruits (price/stock) AND juices (removed/price changed) before sending.
   try {
-    const freshFr = await GET('/fruits?limit=100');
+    const [freshFr, freshJu] = await Promise.all([
+      fruitItems.length ? GET('/fruits?limit=100') : Promise.resolve({ ok: false }),
+      juiceItems.length ? GET('/juices') : Promise.resolve({ ok: false }),
+    ]);
+
+    // ── Fruit checks ──────────────────────────────────────────────
     if (freshFr.ok && Array.isArray(freshFr.fruits) && freshFr.fruits.length > 0) {
+      allFruits = freshFr.fruits;
+      try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
+      renderShopFruits(allFruits); renderHomeFruits();
+
       const priceChanged = fruitItems.some(c => {
-        const fresh = freshFr.fruits.find(f => f._id === (c.fruit || c.fid));
+        const fresh = allFruits.find(f => f._id === (c.fruit || c.fid));
         if (!fresh) return false;
         const freshPrice = fresh.discountPercent > 0
           ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
           : fresh.price;
         return Math.abs(freshPrice - (c.unitPrice || c.pricePerKg || 0)) > 0.01;
       });
-      allFruits = freshFr.fruits;
-      try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
-      renderShopFruits(allFruits); renderHomeFruits();
       if (priceChanged) {
         btn.textContent = 'Place Order'; btn.disabled = false;
         toast('⚠️ Prices updated — please review your cart before confirming.', 'error');
@@ -8342,7 +8340,11 @@ async function placeOrder() {
       }
       for (const c of fruitItems) {
         const fresh = allFruits.find(f => f._id === (c.fruit || c.fid));
-        if (!fresh) continue;
+        if (!fresh || !fresh.isAvailable || fresh.isDeleted) {
+          btn.textContent = 'Place Order'; btn.disabled = false;
+          toast('⚠️ ' + c.name + ' is no longer available. Please update your cart.', 'error');
+          syncCartWithCatalog(); renderCart(); showPage('cart'); return;
+        }
         const reqKg = (c.totalGrams || 500) / 1000;
         if (fresh.stock <= 0) {
           btn.textContent = 'Place Order'; btn.disabled = false;
@@ -8356,22 +8358,57 @@ async function placeOrder() {
         }
       }
     }
-  } catch(_) { /* network blip — let server validate */ }
 
-  // ── Send to server (fruit items go to DB → admin + driver tabs) ──
-  const juiceNote = juiceItems.length
-    ? ' [Juices: ' + juiceItems.map(j => j.name + ' x' + j.qty).join(', ') + ']' : '';
+    // ── Juice checks ──────────────────────────────────────────────
+    if (freshJu.ok && Array.isArray(freshJu.juices)) {
+      for (const c of juiceItems) {
+        const fresh = freshJu.juices.find(j => j.id === c.fid || j._id === c.fid);
+        if (!fresh || fresh.status === 'unavailable' || fresh.status === 'deleted') {
+          btn.textContent = 'Place Order'; btn.disabled = false;
+          toast('⚠️ "' + c.name + '" is no longer available. Please remove it from your cart.', 'error');
+          // Remove the unavailable juice from cart so user sees the updated cart
+          cart = cart.filter(ci => ci.fid !== c.fid);
+          saveCart(); renderCart(); showPage('cart'); return;
+        }
+        const freshPrice = fresh.discountPercent > 0
+          ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
+          : fresh.price;
+        if (Math.abs(freshPrice - (c.unitPrice || c.pricePerKg || 0)) > 0.01) {
+          btn.textContent = 'Place Order'; btn.disabled = false;
+          toast('⚠️ Price of "' + c.name + '" has changed to ₹' + freshPrice + '. Please review your cart.', 'error');
+          // Update local juice list so cart re-renders with correct price
+          const li = localJuices.findIndex(j => j.id === fresh.id || j.id === fresh._id);
+          if (li > -1) { localJuices[li].price = fresh.price; localJuices[li].discountPercent = fresh.discountPercent || 0; saveJuices(); }
+          renderCart(); showPage('cart'); return;
+        }
+      }
+    }
+  } catch(_) { /* network blip — server will validate on receipt */ }
 
+  // ── Send to server (all items — fruits AND juices — go through server validation) ──
   const payload = {
-    items: fruitItems.map(c => ({
-      fruit:          c.fruit || c.fid,
-      weightGrams:    getOrderGrams(c),
-      quantity:       1,
-      name:           c.name,
-      isJuice:        false,
-      // clientSubtotal intentionally removed — server always recalculates from DB price
-      fixedPrice:     c.fixedPrice || null,
-    })),
+    items: [
+      ...fruitItems.map(c => ({
+        fruit:          c.fruit || c.fid,
+        weightGrams:    getOrderGrams(c),
+        quantity:       1,
+        name:           c.name,
+        isJuice:        false,
+        // clientSubtotal intentionally removed — server always recalculates from DB price
+        fixedPrice:     c.fixedPrice || null,
+      })),
+      ...juiceItems.map(c => ({
+        isJuice:        true,
+        juiceId:        c.fid || c.juiceId || '',
+        fruit:          null,
+        name:           c.name,
+        emoji:          c.emoji || '🧃',
+        weightGrams:    c.totalGrams || c.w || 500,
+        weightLabel:    c.displayLabel || c.wl || (c.totalGrams || 500) + 'ml',
+        quantity:       c.qty || 1,
+        // pricePerUnit omitted — server always reads from DB
+      })),
+    ],
     customerName:    name,
     customerPhone:   phone,
     deliveryAddress: (function() {
@@ -8383,7 +8420,7 @@ async function placeOrder() {
         mapsUrl: gps.mapsUrl || (gps.lat ? 'https://maps.google.com/?q=' + gps.lat + ',' + gps.lng : ''),
       };
     })(),
-    orderNotes:    notes + juiceNote + (appliedCoupon ? ' [Coupon: ' + appliedCoupon.code + ']' : ''),
+    orderNotes:    notes + (appliedCoupon ? ' [Coupon: ' + appliedCoupon.code + ']' : ''),
     paymentMethod: payMethod,
     platformFee:   _pfee,
     orderToken:    orderToken, // idempotency key — server deduplicates on this

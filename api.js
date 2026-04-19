@@ -1380,14 +1380,39 @@ async function route(method, path, event) {
     if (body.totalAmount !== undefined && (isNaN(+body.totalAmount) || +body.totalAmount <= 0))
       return R.bad('Invalid totalAmount.');
 
+    const { Juice: JuiceM } = getModels();
     const resolved=[]; let subtotal=0;
     for (const item of items) {
       const looksLikeJuice=item.isJuice||!item.fruit||!mongoose.Types.ObjectId.isValid(item.fruit);
       if (looksLikeJuice) {
+        // ── SERVER-SIDE JUICE VALIDATION ──────────────────────────
+        // Look up the juice in DB by its ID to verify it still exists and is active.
+        // This prevents Cloudflare-cached pages from placing orders for deleted/unavailable juices.
+        const juiceId = item.juiceId || item.fruit || '';
+        let juiceDoc = null;
+        if (juiceId) {
+          // Try by _id first (ObjectId), then by the custom string id field
+          if (mongoose.Types.ObjectId.isValid(juiceId)) {
+            juiceDoc = await JuiceM.findById(juiceId).lean();
+          }
+          if (!juiceDoc) {
+            juiceDoc = await JuiceM.findOne({ id: juiceId }).lean();
+          }
+        }
+        if (!juiceDoc) {
+          return R.bad(`"${item.name || 'A juice'}" is no longer available. Please refresh and update your cart.`);
+        }
+        if (juiceDoc.status === 'unavailable' || juiceDoc.status === 'deleted') {
+          return R.bad(`"${juiceDoc.name}" is currently unavailable. Please update your cart.`);
+        }
+        // Use DB price — never trust client-supplied price
+        const dbPrice = juiceDoc.discountPercent > 0
+          ? parseFloat((juiceDoc.price * (1 - juiceDoc.discountPercent / 100)).toFixed(2))
+          : juiceDoc.price;
         const qty=Math.max(1,+item.quantity||1);
-        const sub=parseFloat((+(item.pricePerUnit||0)*qty).toFixed(2));
+        const sub=parseFloat((dbPrice*qty).toFixed(2));
         const wl=item.weightLabel||(item.weightGrams?item.weightGrams+'ml':'');
-        resolved.push({isJuice:true,juiceId:item.juiceId||item.fruit||'',name:item.name||'Juice',emoji:item.emoji||'🧃',pricePerKg:+(item.pricePerUnit||0),weightGrams:+(item.weightGrams||500),weightLabel:wl,quantity:qty,subtotal:sub});
+        resolved.push({isJuice:true,juiceId:juiceId,name:juiceDoc.name,emoji:juiceDoc.emoji||item.emoji||'🧃',pricePerKg:dbPrice,weightGrams:+(item.weightGrams||juiceDoc.moo||500),weightLabel:wl,quantity:qty,subtotal:sub});
         subtotal+=sub; continue;
       }
       const f=await Fruit.findById(item.fruit);
