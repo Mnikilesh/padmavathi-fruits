@@ -5793,6 +5793,9 @@ async function showPage(page) {
   }
   if (page === 'driver') { setTimeout(initDriverDashboard, 100); }
   else { _stopDriverPolling(); } // stop polling when leaving driver page
+  // Stop checkout price watcher when navigating away
+  if (page !== 'checkout') stopCheckoutPriceWatch();
+  else startCheckoutPriceWatch();
   // Sync bottom tab bar
   if (typeof updateBtab === 'function') updateBtab(page);
 }
@@ -8169,7 +8172,7 @@ function _hideCartWarning() {
 }
 
 async function placeOrder() {
-  // Guard: must be logged in to place order
+  stopCheckoutPriceWatch(); // stop polling while order is being processed
   if (!currentUser || !AT.a) {
     toast('Please login or create an account to place an order.', 'error');
     openAuth('login');
@@ -10664,6 +10667,7 @@ async function loadMyOrders() {
             : '<div class="oc-total">&#8377;' + o.totalAmount.toFixed(0) + '</div>' +
               '<div class="oc-meta">' + (o.paymentMethod||'').toUpperCase() + ' &nbsp;·&nbsp; <span style="background:' + psCls + ';padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700">' + psLabel + '</span>' +
                 (o.deliveryFee > 0 ? ' &nbsp;·&nbsp; Delivery ₹' + o.deliveryFee : ' &nbsp;·&nbsp; Free delivery') +
+                (o.platformFee > 0 ? ' &nbsp;·&nbsp; Platform ₹' + o.platformFee : '') +
               '</div>'
           ) +
         '</div>' +
@@ -15942,6 +15946,7 @@ function downloadOrderInvoice(ordersJsonEncoded) {
 
   // Totals
   if (o.deliveryFee > 0) row('Delivery Fee', '₹' + o.deliveryFee.toFixed(0));
+  if (o.platformFee > 0) row('Platform Fee', '₹' + o.platformFee.toFixed(0));
   if (o.discount > 0) row('Discount', '-₹' + o.discount.toFixed(0));
   row('TOTAL', '₹' + o.totalAmount.toFixed(0), true);
   y+=2;
@@ -16277,6 +16282,94 @@ async function savePlatformFee() {
   } catch(e) {
     if (msg) { msg.style.color = 'red'; msg.textContent = 'Error: ' + e.message; }
   }
+}
+
+/* ── Checkout price-change guard — SSE (server-push, zero polling) ────── */
+/* On checkout entry we open ONE EventSource to GET /api/sse/prices.       */
+/* The server holds the connection open and pushes an event only when an   */
+/* admin actually changes a price. No polling, no wasted API calls.        */
+
+let _sseSource = null;
+
+function startCheckoutPriceWatch() {
+  stopCheckoutPriceWatch();
+  if (!cart || !cart.length) return;
+  if (typeof EventSource === 'undefined') return; // SSE not supported
+
+  _sseSource = new EventSource(API + '/sse/prices');
+
+  _sseSource.onmessage = (e) => {
+    if (!e.data || e.data.startsWith(':')) return; // heartbeat comment
+    let changed;
+    try { changed = JSON.parse(e.data); } catch(_) { return; }
+    if (!changed || changed.type !== 'price') return;
+
+    // Check if this changed item is actually in the cart
+    const affected = cart.filter(item => {
+      const cartId = item.fruit || item.juiceId || item.fid || '';
+      if (cartId !== changed.id) return false;
+      const dbPrice = changed.discountPercent > 0
+        ? parseFloat((changed.price * (1 - changed.discountPercent / 100)).toFixed(2))
+        : changed.price;
+      const cartPrice = item.pricePerKg || item.effPerKg || item.price || 0;
+      return Math.abs(dbPrice - cartPrice) > 0.01;
+    });
+
+    if (!affected.length) return; // price changed for something not in cart — ignore
+
+    // Sync and re-render
+    if (typeof syncCartWithCatalog === 'function') syncCartWithCatalog();
+    if (typeof renderCart === 'function') renderCart();
+    if (typeof renderOrderSummary === 'function') renderOrderSummary();
+
+    const dbPrice = changed.discountPercent > 0
+      ? parseFloat((changed.price * (1 - changed.discountPercent / 100)).toFixed(2))
+      : changed.price;
+    const oldPrice = affected[0].pricePerKg || affected[0].effPerKg || affected[0].price || 0;
+    _showPriceChangeBanner(
+      '⚠️ ' + (changed.emoji || '') + ' ' + changed.name +
+      ' price updated: ₹' + oldPrice.toFixed(0) + ' → ₹' + dbPrice.toFixed(0) +
+      '. Your cart total has been refreshed.'
+    );
+  };
+
+  _sseSource.onerror = () => {
+    // Connection dropped (network blip, server restart) — close cleanly.
+    // Do NOT reconnect in a loop; the server's 409 guard on placeOrder is the safety net.
+    stopCheckoutPriceWatch();
+  };
+}
+
+function stopCheckoutPriceWatch() {
+  if (_sseSource) { _sseSource.close(); _sseSource = null; }
+}
+
+function _showPriceChangeBanner(msg) {
+  let b = document.getElementById('_priceChangeBanner');
+  if (!b) {
+    b = document.createElement('div');
+    b.id = '_priceChangeBanner';
+    b.style.cssText = [
+      'position:sticky', 'top:0', 'z-index:999',
+      'background:#FEF3C7', 'color:#92400E',
+      'padding:10px 40px 10px 16px',
+      'font-size:13px', 'font-weight:600',
+      'border-bottom:2px solid #F59E0B',
+      'text-align:center', 'line-height:1.4',
+    ].join(';');
+    const x = document.createElement('button');
+    x.textContent = '✕';
+    x.style.cssText = 'position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;font-size:14px;cursor:pointer;color:#92400E;padding:2px 6px';
+    x.onclick = () => { b.style.display = 'none'; };
+    b.appendChild(x);
+    const pg = document.querySelector('#page-checkout');
+    if (pg) pg.prepend(b); else document.body.prepend(b);
+  }
+  b.childNodes[0]?.nodeType === Node.TEXT_NODE
+    ? (b.childNodes[0].textContent = msg)
+    : b.insertBefore(document.createTextNode(msg), b.firstChild);
+  b.style.display = 'block';
+  setTimeout(() => { if (b) b.style.display = 'none'; }, 15000);
 }
 
 /* ── Load ALL settings from DB — runs on every page load, every platform ── */

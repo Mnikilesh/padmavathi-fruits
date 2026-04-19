@@ -1,6 +1,6 @@
 /*
  ╔══════════════════════════════════════════════════════════════╗
- ║   PADMAVATHI FRUITS COMPANY — Netlify Serverless Function    ║
+ ║   PADMAVATHI FRUITS COMPANY — Render Persistent Server    ║
  ║   v4 — GPS · Real-Time Polling · Atomic Accept · Driver UI   ║
  ╚══════════════════════════════════════════════════════════════╝
 */
@@ -89,6 +89,7 @@ async function sendOrderEmail(order) {
     '-------------',
     'Subtotal   : Rs.' + (order.subtotal || 0).toFixed(2),
     'Delivery   : Rs.' + (order.deliveryFee || 0).toFixed(2),
+    ...(order.platformFee > 0 ? ['Platform   : Rs.' + (order.platformFee || 0).toFixed(2)] : []),
     'TOTAL      : Rs.' + (order.totalAmount || 0).toFixed(2),
     '',
     '--- Delivery Address ---',
@@ -273,7 +274,7 @@ const orderSchema = new mongoose.Schema({
     lat:Number, lng:Number, mapsUrl:String,
   },
   orderNotes:String,
-  subtotal:Number, deliveryFee:{ type:Number, default:0 }, totalAmount:Number,
+  subtotal:Number, deliveryFee:{ type:Number, default:0 }, platformFee:{ type:Number, default:0 }, totalAmount:Number,
   paymentMethod:  { type:String, enum:['cod','upi','razorpay'], required:true },
   paymentStatus:  { type:String, enum:['pending','paid','failed','refunded'], default:'pending' },
   razorpayOrderId:String, razorpayPaymentId:String,
@@ -513,6 +514,20 @@ function corsHeaders(origin) {
     'Vary': 'Origin',
     'Content-Type': 'application/json',
   };
+}
+
+// ── SSE — price-change push ───────────────────────────────────
+// Clients on the checkout page connect to GET /api/sse/prices.
+// When an admin updates a fruit or juice price, broadcastPriceChange()
+// pushes one small event to every connected client. No polling needed.
+const _sseClients = new Set();
+
+function broadcastPriceChange(payload) {
+  if (!_sseClients.size) return;
+  const data = 'data: ' + JSON.stringify(payload) + '\n\n';
+  for (const res of _sseClients) {
+    try { res.write(data); } catch(e) { _sseClients.delete(res); }
+  }
 }
 
 // R helpers — origin is threaded from the request context via _reqOrigin
@@ -1196,6 +1211,8 @@ async function route(method, path, event) {
     if (discountPercent!==undefined) up.discountPercent=+discountPercent;
     const fruit=await Fruit.findByIdAndUpdate(id,up,{new:true});
     if (!fruit) return R.nf('Fruit not found.');
+    // Push price change to any checkout clients connected via SSE
+    broadcastPriceChange({ type:'price', id: fruit._id.toString(), name: fruit.name, price: fruit.price, discountPercent: fruit.discountPercent || 0, emoji: fruit.emoji || '' });
     return R.ok({fruit},'Price updated');
   }
 
@@ -1265,7 +1282,6 @@ async function route(method, path, event) {
     return R.ok({review},'Review updated!');
   }
 
-  // GET /api/reviews/home — public, returns top reviews (rating>=4, approved) for homepage
   if (method==='GET' && path==='/api/reviews/home') {
     const { Review: ReviewM, Fruit: FruitM } = getModels();
     const limit = Math.min(20, parseInt(q.limit)||12);
@@ -1336,6 +1352,9 @@ async function route(method, path, event) {
       if (imageUrl)                             up.imageUrl = imageUrl;
       const fruit = await Fruit.findByIdAndUpdate(id, { $set: up }, { new: true, runValidators: true });
       if (!fruit) return R.nf('Fruit not found.');
+      // Broadcast to SSE clients if price or discount changed
+      if (up.price !== undefined || up.discountPercent !== undefined)
+        broadcastPriceChange({ type:'price', id: fruit._id.toString(), name: fruit.name, price: fruit.price, discountPercent: fruit.discountPercent || 0, emoji: fruit.emoji || '' });
       return R.ok({ fruit }, 'Updated');
     } catch(e) { return R.err(e.message || 'Failed to update fruit.'); }
   }
@@ -1497,7 +1516,12 @@ async function route(method, path, event) {
       // Unknown or expired coupon — silently ignore (don't block order)
     }
 
-    const totalAmount=parseFloat((subtotal + deliveryFee - couponDiscount).toFixed(2));
+    // ── PLATFORM FEE — read from MongoDB Settings (never trust client) ────────
+    const platformFeeSetting = await SettingsM.findOne({ key: 'platformFee' }).lean();
+    const platformFee = (platformFeeSetting && typeof platformFeeSetting.value === 'number')
+      ? platformFeeSetting.value : 0;
+
+    const totalAmount=parseFloat((subtotal + deliveryFee + platformFee - couponDiscount).toFixed(2));
     const initialPaymentStatus=(paymentMethod==='upi'||paymentMethod==='razorpay')?'paid':'pending';
 
     // ── IDEMPOTENCY CHECK 2: time-window fallback (catches token-less retries) ──
@@ -1541,7 +1565,7 @@ async function route(method, path, event) {
         lng: hasGPS ? +deliveryAddress.lng : null,
         mapsUrl: deliveryAddress.mapsUrl || (hasGPS ? `https://maps.google.com/?q=${deliveryAddress.lat},${deliveryAddress.lng}` : ''),
       },
-      orderNotes: finalOrderNotes, subtotal, deliveryFee, totalAmount, paymentMethod,
+      orderNotes: finalOrderNotes, subtotal, deliveryFee, platformFee, totalAmount, paymentMethod,
       paymentStatus:initialPaymentStatus,
       statusHistory:[{status:'placed'}],
       estimatedDelivery:new Date(Date.now()+24*36e5),
@@ -2245,6 +2269,9 @@ async function route(method, path, event) {
     for (const k of allowed) { if (body[k] !== undefined) up[k] = body[k]; }
     const juice = await Juice.findByIdAndUpdate(id, { $set: up }, { new:true, runValidators:true });
     if (!juice) return R.nf('Juice not found.');
+    // Broadcast to SSE clients if price or discount changed
+    if (up.price !== undefined || up.discountPercent !== undefined)
+      broadcastPriceChange({ type:'price', id: juice._id.toString(), name: juice.name, price: juice.price, discountPercent: juice.discountPercent || 0, emoji: juice.img ? '' : '🧃', isJuice: true });
     return R.ok({ juice }, 'Updated.');
   }
 
@@ -2416,6 +2443,7 @@ async function route(method, path, event) {
       savings: parseFloat((basePrice - computedFinalPrice).toFixed(2)),
     };
     console.log(`[PFC] DISCOUNT_SET fruitId:${id} originalPrice:${basePrice} discountPct:${finalDiscountPct} finalPrice:${computedFinalPrice} by admin:${auth.user._id}`);
+    broadcastPriceChange({ type:'price', id: fruit._id.toString(), name: fruit.name, price: basePrice, discountPercent: finalDiscountPct, emoji: fruit.emoji || '' });
     return R.ok({ fruit: response }, 'Discount applied. Final price computed on backend.');
   }
 
@@ -2457,6 +2485,7 @@ async function route(method, path, event) {
     await juice.save();
 
     console.log(`[PFC] JUICE_DISCOUNT_SET juiceId:${id} originalPrice:${basePrice} discountPct:${finalDiscountPct} by admin:${auth.user._id}`);
+    broadcastPriceChange({ type:'price', id: juice._id.toString(), name: juice.name, price: basePrice, discountPercent: finalDiscountPct, emoji: '🧃', isJuice: true });
     return R.ok({
       juice: { _id:juice._id, name:juice.name, originalPrice:basePrice,
                discountPercent:finalDiscountPct, finalPrice:computedFinalPrice }
@@ -2834,6 +2863,31 @@ const server = http.createServer(async (req, res) => {
         queryStringParameters: Object.fromEntries(url.searchParams)
       };
 
+      // ── SSE: GET /api/sse/prices ─────────────────────────────
+      // Holds the connection open and pushes price-change events when
+      // an admin updates a fruit or juice price. One persistent connection
+      // per checkout visitor; zero polling; closes when user leaves checkout.
+      if (method === 'GET' && path === '/api/sse/prices') {
+        const origin = req.headers.origin || '';
+        const allowed = origin && ALLOWED_ORIGINS.includes(origin);
+        res.writeHead(200, {
+          'Content-Type':                'text/event-stream',
+          'Cache-Control':               'no-cache',
+          'Connection':                  'keep-alive',
+          ...(allowed ? {
+            'Access-Control-Allow-Origin':      origin,
+            'Access-Control-Allow-Credentials': 'true',
+            'Vary': 'Origin',
+          } : {}),
+        });
+        res.write(': connected\n\n');   // initial comment keeps connection alive
+        _sseClients.add(res);
+        // Heartbeat every 25s to prevent proxy/load-balancer timeouts
+        const hb = setInterval(() => { try { res.write(': ping\n\n'); } catch(e) { clearInterval(hb); _sseClients.delete(res); } }, 25000);
+        req.on('close', () => { clearInterval(hb); _sseClients.delete(res); });
+        return; // do NOT call res.end() — connection stays open
+      }
+
       if (method === 'OPTIONS') {
         const origin = req.headers.origin || '';
         res.writeHead(204, corsHeaders(origin));
@@ -2856,53 +2910,3 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🚀 Running on ${PORT}`);
 });
-
-// ─── NETLIFY HANDLER ─────────────────────────────────────────
-
-exports.handler = async (event) => {
-  const method=event.httpMethod.toUpperCase();
-  if (method==='OPTIONS') {
-    const origin = event.headers.origin || event.headers.Origin || '';
-    return { statusCode:204, headers:corsHeaders(origin), body:'' };
-  }
-  let rawPath=event.rawUrl ? new URL(event.rawUrl).pathname : (event.path||'/');
-  rawPath=rawPath
-    .replace(/^\/.netlify\/functions\/api/,'')
-    .replace(/^\/api/,'');
-  const path=rawPath==='/health' ? '/health' : '/api'+(rawPath||'/');
-  try {
-    await connectDB();
-    await seedIfEmpty().catch(e=>console.error('[PFC] Seed error:',e.message));
-    return await route(method,path,event);
-  } catch(err) {
-    // ── NEVER CRASH: catch all async errors (Task 12) ──────────
-    console.error('[PFC] UNHANDLED_ERROR path:'+path+' method:'+method+' err:'+err.message);
-    if (err.code===11000) {
-      const field=Object.keys(err.keyValue||{})[0];
-      // orderToken duplicate = idempotency race — return existing order silently (Task 12)
-      if (field==='orderToken' && err.keyValue?.orderToken) {
-        const ip=(event.headers['x-forwarded-for']||'').split(',')[0].trim()||'unknown';
-        console.log(`[PFC] DUPLICATE_TOKEN_RACE orderToken:${err.keyValue.orderToken} ip:${ip}`);
-        try {
-          const { Order:OrderM } = getModels();
-          const dup = await OrderM.findOne({ orderToken: err.keyValue.orderToken });
-          if (dup) return R.ok({ order: dup }, 'Order already placed (duplicate prevented).');
-        } catch(_) {}
-      }
-      // phone/email duplicate on user creation
-      if (field==='phone') return R.bad('An account with this mobile number already exists.');
-      if (field==='email') return R.bad('An account with this email already exists.');
-      return R.bad((field||'Field')+' already exists.');
-    }
-    if (err.name==='ValidationError') {
-      const errors=Object.values(err.errors).map(e=>({field:e.path,message:e.message}));
-      return R.json({success:false,message:'Validation failed',errors},400);
-    }
-    if (err.name==='CastError') return R.bad('Invalid ID.');
-    // Always return structured JSON — never let server crash (Task 12)
-    return R.err(err.message||'Internal server error');
-  }
-  
-  
-
-};
