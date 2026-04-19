@@ -155,7 +155,6 @@ body {
 
 #r-name,#r-email,#r-phone,#r-pass{width:100%;height:48px;padding:0 14px;font-size:15px;border:1px solid #ccc;border-radius:8px;box-sizing:border-box;margin-bottom:12px;} .pw-wrap{position:relative;width:100%;margin-bottom:12px;} .pw-wrap input{padding-right:45px;} .pw-eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);height:24px;width:24px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;} .pw-eye svg{width:20px;height:20px;} .modal-err{width:100%;min-height:18px;font-size:13px;color:red;margin-top:6px;}
 
-
 /* ─── PAGES ──────────────────────────────────────────────── */
 .page { display: none; }
 .page.active { display: block; animation: pageFadeIn .3s ease; }
@@ -5571,14 +5570,13 @@ const _apiGuard = (() => {
   if (_day !== _today()) { _day = _today(); _n = 0; localStorage.setItem(_DAY_KEY,_day); localStorage.setItem(_CNT_KEY,'0'); }
   return {
     get n() { return _n; },
-    inc(skip, method, ipath) {
-      if (skip) return true;          // background / polling calls bypass counter
-      // Admin PATCH/PUT/DELETE on fruit/juice/admin routes are intentional power-user
-      // actions — never block them with the loop guard.
-      if (method && ipath &&
-          (method === 'PATCH' || method === 'PUT' || method === 'DELETE') &&
-          (ipath.includes('/fruits') || ipath.includes('/admin/') || ipath.includes('/juices'))) {
-        return true;
+    inc(skip) {
+      if (skip) return true; // background / polling calls bypass counter
+      // Admin and driver users have no call limit — they manage inventory, orders and
+      // deliveries and must never be blocked by a loop-guard designed for shoppers.
+      if (typeof getTokenRole === 'function') {
+        const role = getTokenRole();
+        if (role === 'admin' || role === 'driver') return true;
       }
       _n++;
       localStorage.setItem(_CNT_KEY, _n);
@@ -5613,7 +5611,7 @@ function getTokenRole() {
 
 async function http(method, path, body, skipAuth, skipGuard) {
   // Daily call guard — prevents runaway loops; background polling bypasses via skipGuard=true
-  if (!_apiGuard.inc(skipGuard, method, path)) return { ok: false, status: 0, message: 'API call cap reached. Please try again tomorrow or contact support.' };
+  if (!_apiGuard.inc(skipGuard)) return { ok: false, status: 0, message: 'API call cap reached. Please try again tomorrow or contact support.' };
   const h = { 'Content-Type': 'application/json' };
   // Force auth on admin/driver routes even if skipAuth was accidentally set
   const forceAuth = path && (path.includes('/admin/') || path.includes('/driver/'));
