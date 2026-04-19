@@ -5795,8 +5795,66 @@ async function showPage(page) {
     }
     window._gpsFromSavedAddr = false;
   }
-  if (page === 'driver') { setTimeout(initDriverDashboard, 100); }
-  else { _stopDriverPolling(); } // stop polling when leaving driver page
+  if (page === 'driver') {
+    setTimeout(initDriverDashboard, 100);
+    // Show driver-only bottom nav: Delivery Dashboard + Contact Us
+    const bar = document.getElementById('bottomTabBar');
+    if (bar) {
+      const inner = bar.querySelector('.btab-inner');
+      if (inner) {
+        inner.innerHTML =
+          '<button class="btab active" id="btab-driver" onclick="btabNav(\'driver\')">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l3 3"/></svg>' +
+            'Deliveries' +
+          '</button>' +
+          '<button class="btab" id="btab-contact-d" onclick="btabNav(\'contact\')">' +
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81 19.79 19.79 0 01.01 1.18 2 2 0 012 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92z"/></svg>' +
+            'Contact Us' +
+          '</button>';
+        bar._driverMode = true;
+      }
+    }
+  } else {
+    _stopDriverPolling(); // stop polling when leaving driver page
+    // Restore full bottom nav if it was in driver mode
+    const bar = document.getElementById('bottomTabBar');
+    if (bar && bar._driverMode) {
+      // If driver navigates to contact, keep driver nav but update active tab
+      if (page === 'contact') {
+        const tabs = bar.querySelectorAll('.btab');
+        tabs.forEach(t => t.classList.remove('active'));
+        const cTab = bar.querySelector('#btab-contact-d');
+        if (cTab) cTab.classList.add('active');
+      } else {
+        const inner = bar.querySelector('.btab-inner');
+        if (inner) {
+          inner.innerHTML =
+            '<button class="btab" id="btab-home" onclick="btabNav(\'home\')">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>' +
+              'Home' +
+            '</button>' +
+            '<button class="btab" id="btab-shop" onclick="btabNav(\'shop\')">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>' +
+              'Shop' +
+            '</button>' +
+            '<button class="btab" id="btab-baskets" onclick="btabNav(\'bundles\')">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 7h18l-3-5"/><path d="M3 7l1.5 10.5A2 2 0 006.46 19h11.08a2 2 0 001.96-1.5L21 7"/><line x1="12" y1="11" x2="12" y2="16"/><line x1="8" y1="11" x2="8.5" y2="16"/><line x1="16" y1="11" x2="15.5" y2="16"/></svg>' +
+              'Basket' +
+            '</button>' +
+            '<button class="btab" id="btab-contact" onclick="btabNav(\'contact\')">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07A19.5 19.5 0 013.07 9.81 19.79 19.79 0 01.01 1.18 2 2 0 012 0h3a2 2 0 012 1.72c.127.96.361 1.903.7 2.81a2 2 0 01-.45 2.11L6.09 7.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0122 14.92z"/></svg>' +
+              'Contact' +
+            '</button>' +
+            '<button class="btab" id="btab-profile" onclick="btabNav(\'profile\')">' +
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' +
+              'Profile' +
+            '</button>';
+          bar._driverMode = false;
+        }
+        updateBtab(page);
+      }
+    }
+  }
   // Stop checkout price watcher when navigating away
   if (page !== 'checkout') stopCheckoutPriceWatch();
   else startCheckoutPriceWatch();
