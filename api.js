@@ -1454,27 +1454,65 @@ async function route(method, path, event) {
       const qty=Math.max(1,+item.quantity||1);
       const reqKg=(+item.weightGrams/1000)*qty;
       if (reqKg>f.stock) return R.bad(`Only ${f.stock}kg of ${f.name} available.`);
-      const pp=f.effectivePrice;
-      // Always recalculate from DB price — never use clientSubtotal
-      const sub=parseFloat((pp*(item.weightGrams/1000)*qty).toFixed(2));
-      const wl=item.weightGrams>=1000?(item.weightGrams/1000)+'kg':item.weightGrams+'g';
-      // ── PRICE CHANGE DETECTION ───────────────────────────────────
-      // If client sent a price, compare it against DB price.
-      // Return a specific error so frontend can show warning BEFORE saving the order.
-      const clientPrice = item.clientPrice !== undefined ? +item.clientPrice : null;
-      if (clientPrice !== null && Math.abs(clientPrice - pp) > 0.01) {
-        // MANDATORY LOGGING: old price vs new price + user who attempted the order
-        console.warn(
-          `[PFC] PRICE_MISMATCH_BLOCKED fruit="${f.name}" oldPrice=₹${clientPrice}/kg newPrice=₹${pp}/kg` +
-          ` userId=${auth.user._id} userEmail=${auth.user.email} ip=${clientIP}`
-        );
-        return R.json({
-          success: false,
-          priceChanged: true,
-          message: `Price of ${f.name} has changed from ₹${clientPrice}/kg to ₹${pp}/kg. Please review your cart.`,
-          changes: [{ name: f.name, oldPrice: clientPrice, newPrice: pp, emoji: f.emoji }]
-        }, 409);
+
+      // ── CUSTOM UNIT PRICING (fixedPrice per unit) ────────────────
+      // For custom-unit fruits (e.g. "5kg = ₹250 fixed"), the subtotal must be
+      // computed as fixedPrice × qty, NOT as effectivePrice/kg × totalWeightKg.
+      // The fixedPrice sent by the client is validated against the DB customUnits
+      // array — we never trust the raw client value directly.
+      let pp, sub;
+      const clientFixedPrice = item.fixedPrice ? +item.fixedPrice : null;
+      if (clientFixedPrice && clientFixedPrice > 0 && f.unitType === 'custom' && Array.isArray(f.customUnits) && f.customUnits.length) {
+        // gramsPerUnit = totalGrams / qty (frontend sends totalGrams as weightGrams)
+        const gramsPerUnit = Math.round(+item.weightGrams / qty);
+        const dbUnit = f.customUnits.find(u => Math.abs((+u.grams) - gramsPerUnit) <= 1);
+        if (!dbUnit) return R.bad(`Custom unit (${gramsPerUnit}g) not found for ${f.name}. Please refresh.`);
+
+        // Compute authoritative unit price from DB, applying any product-level discount
+        const discPct = f.discountPercent > 0 ? f.discountPercent : 0;
+        const dbUnitPrice = dbUnit.fixedPrice && +dbUnit.fixedPrice > 0
+          ? parseFloat((+dbUnit.fixedPrice * (1 - discPct / 100)).toFixed(2))
+          : parseFloat((f.price * (1 - discPct / 100) * (+dbUnit.grams) / 1000).toFixed(2));
+
+        // Reject if what user saw at checkout differs from current DB price
+        if (Math.abs(clientFixedPrice - dbUnitPrice) > 0.01) {
+          console.warn(
+            `[PFC] PRICE_MISMATCH_BLOCKED (custom unit) fruit="${f.name}" ` +
+            `oldUnitPrice=₹${clientFixedPrice} newUnitPrice=₹${dbUnitPrice} ` +
+            `unitLabel="${dbUnit.label||gramsPerUnit+'g'}" qty=${qty} ` +
+            `userId=${auth.user._id} userEmail=${auth.user.email} ip=${clientIP}`
+          );
+          return R.json({
+            success: false, priceChanged: true,
+            message: `Price of ${f.name} (${dbUnit.label || gramsPerUnit+'g'}) has changed from ₹${clientFixedPrice} to ₹${dbUnitPrice}. Please review your cart.`,
+            changes: [{ name: f.name, oldPrice: clientFixedPrice, newPrice: dbUnitPrice, emoji: f.emoji }]
+          }, 409);
+        }
+
+        // Use DB-authoritative unit price for subtotal
+        pp  = parseFloat((dbUnitPrice / (+dbUnit.grams / 1000)).toFixed(4)); // effective /kg stored for reference
+        sub = parseFloat((dbUnitPrice * qty).toFixed(2));
+      } else {
+        // Standard weight-based pricing
+        pp = f.effectivePrice;
+        sub = parseFloat((pp * (+item.weightGrams / 1000) * qty).toFixed(2));
+
+        // ── PRICE CHANGE DETECTION (standard /kg items) ───────────
+        const clientPrice = item.clientPrice !== undefined ? +item.clientPrice : null;
+        if (clientPrice !== null && Math.abs(clientPrice - pp) > 0.01) {
+          console.warn(
+            `[PFC] PRICE_MISMATCH_BLOCKED fruit="${f.name}" oldPrice=₹${clientPrice}/kg newPrice=₹${pp}/kg` +
+            ` userId=${auth.user._id} userEmail=${auth.user.email} ip=${clientIP}`
+          );
+          return R.json({
+            success: false, priceChanged: true,
+            message: `Price of ${f.name} has changed from ₹${clientPrice}/kg to ₹${pp}/kg. Please review your cart.`,
+            changes: [{ name: f.name, oldPrice: clientPrice, newPrice: pp, emoji: f.emoji }]
+          }, 409);
+        }
       }
+
+      const wl=+item.weightGrams>=1000?(+item.weightGrams/1000)+'kg':item.weightGrams+'g';
       resolved.push({fruit:f._id,name:f.name,emoji:f.emoji,variety:f.variety,pricePerKg:pp,weightGrams:+item.weightGrams,weightLabel:wl,quantity:qty,subtotal:sub});
       subtotal+=sub;
     }

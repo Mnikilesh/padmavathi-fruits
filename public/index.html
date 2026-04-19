@@ -5774,7 +5774,11 @@ async function showPage(page) {
     window._checkoutPriceSnapshot = {};
     cart.forEach(c => {
       if (!c.isJuice) {
-        const snap = c.effPerKg !== undefined ? c.effPerKg : c.pricePerKg;
+        // For custom-unit items snapshot the per-unit fixedPrice so the comparison
+        // in placeOrder() is apple-to-apple (unit price vs unit price, not /kg vs /kg).
+        const snap = (c.fixedPrice && c.fixedPrice > 0)
+          ? c.fixedPrice
+          : (c.effPerKg !== undefined ? c.effPerKg : c.pricePerKg);
         window._checkoutPriceSnapshot[c.fid + ':' + (c.unitLabel||'')] = snap;
       } else {
         const snapJ = c.discountPercent > 0
@@ -7367,17 +7371,35 @@ function syncCartWithCatalog(silent) {
     // ── Refresh price from catalog so displayed total stays accurate ──
     // This does NOT affect the server — the server always recomputes from DB.
     // It prevents the user from seeing a stale total in the cart drawer.
-    const freshPrice = f.discountPercent > 0
-      ? parseFloat((f.price * (1 - f.discountPercent / 100)).toFixed(2))
-      : f.price;
-    const cartEffPrice = c.effPerKg !== undefined ? c.effPerKg : (c.unitPrice !== undefined ? c.unitPrice : c.pricePerKg);
-    if (cartEffPrice !== undefined && Math.abs(freshPrice - cartEffPrice) > 0.01) {
-      priceUpdated.push(c.name);
-      c.effPerKg   = freshPrice;
-      c.unitPrice  = freshPrice;
-      c.pricePerKg = f.price; // keep raw base price
-      // Recalculate displayed subtotal for this cart item
-      c.price = parseFloat((freshPrice * (c.totalGrams || 500) / 1000).toFixed(2));
+    // For custom-unit (fixedPrice) items we compare the per-unit price directly
+    // rather than the /kg rate, to avoid false-positive mismatches.
+    if (c.fixedPrice && c.fixedPrice > 0 && f.unitType === 'custom' && Array.isArray(f.customUnits) && f.customUnits.length) {
+      // Find matching DB unit by grams-per-unit
+      const gramsPerUnit = c.qty > 0 ? Math.round((c.totalGrams || c.weightGrams || 0) / c.qty) : 0;
+      const dbUnit = gramsPerUnit > 0 ? f.customUnits.find(u => Math.abs((+u.grams) - gramsPerUnit) <= 1) : null;
+      if (dbUnit && dbUnit.fixedPrice && +dbUnit.fixedPrice > 0) {
+        const discPct = f.discountPercent > 0 ? f.discountPercent : 0;
+        const freshUnitPrice = parseFloat((+dbUnit.fixedPrice * (1 - discPct / 100)).toFixed(2));
+        if (Math.abs(freshUnitPrice - c.fixedPrice) > 0.01) {
+          priceUpdated.push(c.name);
+          c.fixedPrice = freshUnitPrice;
+          c.effPerKg   = parseFloat((freshUnitPrice / (+dbUnit.grams / 1000)).toFixed(4));
+          c.pricePerKg = f.price;
+          c.price = parseFloat((freshUnitPrice * c.qty).toFixed(2));
+        }
+      }
+    } else {
+      const freshPrice = f.discountPercent > 0
+        ? parseFloat((f.price * (1 - f.discountPercent / 100)).toFixed(2))
+        : f.price;
+      const cartEffPrice = c.effPerKg !== undefined ? c.effPerKg : (c.unitPrice !== undefined ? c.unitPrice : c.pricePerKg);
+      if (cartEffPrice !== undefined && Math.abs(freshPrice - cartEffPrice) > 0.01) {
+        priceUpdated.push(c.name);
+        c.effPerKg   = freshPrice;
+        c.unitPrice  = freshPrice;
+        c.pricePerKg = f.price;
+        c.price = parseFloat((freshPrice * (c.totalGrams || 500) / 1000).toFixed(2));
+      }
     }
     return true;
   });
@@ -8384,15 +8406,24 @@ async function placeOrder() {
       const priceChanged = fruitItems.some(c => {
         const fresh = allFruits.find(f => f._id === (c.fruit || c.fid));
         if (!fresh) return false;
-        const freshPrice = fresh.discountPercent > 0
-          ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
-          : fresh.price;
-        // Compare against the snapshot taken when user opened checkout —
-        // NOT against live cart fields that may have been silently updated by background polling.
         const snapKey = c.fid + ':' + (c.unitLabel || '');
         const snapPrice = snap[snapKey] !== undefined
           ? snap[snapKey]
-          : (c.effPerKg !== undefined ? c.effPerKg : (c.pricePerKg || 0));
+          : ((c.fixedPrice && c.fixedPrice > 0) ? c.fixedPrice : (c.effPerKg !== undefined ? c.effPerKg : (c.pricePerKg || 0)));
+        // For custom-unit items compare per-unit fixedPrice; for /kg items compare effective /kg
+        if (c.fixedPrice && c.fixedPrice > 0 && fresh.unitType === 'custom' && Array.isArray(fresh.customUnits) && fresh.customUnits.length) {
+          const gramsPerUnit = c.qty > 0 ? Math.round((c.totalGrams || c.weightGrams || 0) / c.qty) : 0;
+          const dbUnit = gramsPerUnit > 0 ? fresh.customUnits.find(u => Math.abs((+u.grams) - gramsPerUnit) <= 1) : null;
+          if (!dbUnit) return true; // unit no longer exists → treat as changed
+          const discPct = fresh.discountPercent > 0 ? fresh.discountPercent : 0;
+          const freshUnitPrice = dbUnit.fixedPrice && +dbUnit.fixedPrice > 0
+            ? parseFloat((+dbUnit.fixedPrice * (1 - discPct / 100)).toFixed(2))
+            : parseFloat((fresh.price * (1 - discPct / 100) * (+dbUnit.grams) / 1000).toFixed(2));
+          return Math.abs(freshUnitPrice - snapPrice) > 0.01;
+        }
+        const freshPrice = fresh.discountPercent > 0
+          ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
+          : fresh.price;
         return Math.abs(freshPrice - snapPrice) > 0.01;
       });
       if (priceChanged) {
@@ -8461,13 +8492,17 @@ async function placeOrder() {
       ...fruitItems.map(c => ({
         fruit:          c.fruit || c.fid,
         weightGrams:    getOrderGrams(c),
-        quantity:       1,
+        // For custom-unit items qty > 1 is meaningful (e.g. 2 × 5kg units).
+        // For standard /kg items the server ignores qty and uses weightGrams.
+        quantity:       (c.fixedPrice && c.fixedPrice > 0) ? (c.qty || 1) : 1,
         name:           c.name,
         isJuice:        false,
         fixedPrice:     c.fixedPrice || null,
-        // clientPrice: the effective price the user saw — server compares against DB price
-        // and returns 409 if they differ, so user is warned before order is saved.
-        clientPrice:    c.effPerKg !== undefined ? c.effPerKg : (c.pricePerKg || 0),
+        // clientPrice: for custom units send the per-unit price so the server can
+        // compare it against the DB unit price. For /kg items send the effective /kg.
+        clientPrice:    (c.fixedPrice && c.fixedPrice > 0)
+                          ? c.fixedPrice
+                          : (c.effPerKg !== undefined ? c.effPerKg : (c.pricePerKg || 0)),
       })),
       ...juiceItems.map(c => ({
         isJuice:        true,
@@ -8560,12 +8595,18 @@ async function placeOrder() {
           // Patch allFruits
           const fi = allFruits.findIndex(f => f.name === ch.name);
           if (fi >= 0) allFruits[fi] = { ...allFruits[fi], price: ch.newPrice };
-          // Patch cart items
+          // Patch cart items — for custom-unit items update fixedPrice; for /kg items update effPerKg
           cart.forEach(c => {
             if (c.name === ch.name && !c.isJuice) {
-              c.effPerKg = ch.newPrice;
-              c.pricePerKg = ch.newPrice;
-              c.price = parseFloat((ch.newPrice * (c.totalGrams || 500) / 1000).toFixed(2));
+              if (c.fixedPrice && c.fixedPrice > 0) {
+                c.fixedPrice = ch.newPrice;
+                c.effPerKg   = parseFloat((ch.newPrice / ((c.totalGrams || 500) / 1000 / (c.qty || 1))).toFixed(4));
+                c.price      = parseFloat((ch.newPrice * (c.qty || 1)).toFixed(2));
+              } else {
+                c.effPerKg   = ch.newPrice;
+                c.pricePerKg = ch.newPrice;
+                c.price      = parseFloat((ch.newPrice * (c.totalGrams || 500) / 1000).toFixed(2));
+              }
             }
             if (c.name === ch.name && c.isJuice) {
               c.pricePerKg = ch.newPrice;
@@ -8578,8 +8619,12 @@ async function placeOrder() {
         // Refresh snapshot so next attempt uses the new confirmed prices
         window._checkoutPriceSnapshot = {};
         cart.forEach(c => {
-          if (!c.isJuice) window._checkoutPriceSnapshot[c.fid + ':' + (c.unitLabel||'')] = c.effPerKg !== undefined ? c.effPerKg : c.pricePerKg;
-          else {
+          if (!c.isJuice) {
+            const snap = (c.fixedPrice && c.fixedPrice > 0)
+              ? c.fixedPrice
+              : (c.effPerKg !== undefined ? c.effPerKg : c.pricePerKg);
+            window._checkoutPriceSnapshot[c.fid + ':' + (c.unitLabel||'')] = snap;
+          } else {
             const sj = c.discountPercent > 0 ? parseFloat((c.pricePerKg*(1-c.discountPercent/100)).toFixed(2)) : (c.pricePerKg||0);
             window._checkoutPriceSnapshot[c.fid + ':juice'] = sj;
           }
@@ -16404,6 +16449,14 @@ function startCheckoutPriceWatch() {
       const dbPrice = changed.discountPercent > 0
         ? parseFloat((changed.price * (1 - changed.discountPercent / 100)).toFixed(2))
         : changed.price;
+      // For custom-unit items compare per-unit fixedPrice, not /kg
+      if (item.fixedPrice && item.fixedPrice > 0) {
+        // We don't have per-unit DB price here; flag as changed only if the
+        // base price shift would materially alter the unit price calculation.
+        // syncCartWithCatalog (called below) will compute the exact new price.
+        const cartEffKg = item.effPerKg || (item.fixedPrice / ((item.totalGrams || 1000) / 1000 / (item.qty || 1)));
+        return Math.abs(dbPrice - cartEffKg) > 0.01;
+      }
       const cartPrice = item.pricePerKg || item.effPerKg || item.price || 0;
       return Math.abs(dbPrice - cartPrice) > 0.01;
     });
