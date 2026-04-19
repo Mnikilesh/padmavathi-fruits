@@ -152,7 +152,7 @@ body {
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
-
+#r-name,#r-email,#r-phone,#r-pass{width:100%;height:48px;padding:0 14px;font-size:15px;border:1px solid #ccc;border-radius:8px;box-sizing:border-box;} .pw-wrap{position:relative;width:100%;} .pw-wrap input{padding-right:45px;} .pw-eye{position:absolute;right:10px;top:50%;transform:translateY(-50%);height:24px;width:24px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;} .pw-eye svg{width:20px;height:20px;} .modal-err{width:100%;min-height:18px;font-size:13px;color:red;margin-top:6px;}
 /* ─── PAGES ──────────────────────────────────────────────── */
 .page { display: none; }
 .page.active { display: block; animation: pageFadeIn .3s ease; }
@@ -11294,7 +11294,7 @@ function _renderAdminFruitsFromData(fruits, cat, search) {
     return;
   }
 
-  let tbl = '<table class="admin-table"><thead><tr><th>Fruit</th><th>Category</th><th>Price/kg</th><th>Stock (kg)</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+  let tbl = '<table class="admin-table"><thead><tr><th>Fruit</th><th>Category</th><th>Price/kg</th><th>Discount %</th><th>Stock (kg)</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
   fruits.forEach(function(f) {
     // Status logic: Hidden > OOS > Low > In Stock
     let statusText, statusDot, statusBg;
@@ -11331,6 +11331,13 @@ function _renderAdminFruitsFromData(fruits, cat, search) {
             '</div>'
           : '') +
         '</div></td>' +
+      '<td><div style="display:flex;align-items:center;gap:4px">' +
+        '<span style="font-size:11px;color:var(--muted)">%</span>' +
+        '<input type="number" id="di-' + safeId + '" value="' + (f.discountPercent||0) + '" min="0" max="90" step="1"' +
+        ' style="width:52px;padding:5px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:13px;font-weight:700;color:var(--orange);outline:none" placeholder="0">' +
+        '<button class="btn-edit" data-act="save-discount" data-id="' + safeId + '" style="padding:5px 8px;font-size:11px;background:#FFF3CD;color:#856404;border-color:#FFC107">Set</button>' +
+        (f.discountPercent > 0 ? '<span style="font-size:10px;font-weight:800;background:#DCFCE7;color:#15803D;padding:1px 5px;border-radius:10px;white-space:nowrap">-' + f.discountPercent + '% OFF</span>' : '') +
+      '</div></td>' +
       '<td><div style="display:flex;align-items:center;gap:6px"><input type="number" id="si-' + safeId + '" value="' + f.stock + '" min="0" style="width:58px;padding:5px;border:1.5px solid var(--border);border-radius:6px;font-size:13px;font-weight:700;color:' + sc + ';outline:none"><button class="btn-edit" data-act="save-stock" data-id="' + safeId + '" style="padding:5px 8px;font-size:11px">Save</button></div></td>' +
       '<td><span style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:' + statusBg + ';color:' + statusDot + '"><span style="width:7px;height:7px;border-radius:50%;background:' + statusDot + ';display:inline-block;flex-shrink:0"></span>' + statusText + '</span></td>' +
       '<td><div class="admin-actions"><button class="btn-edit" data-act="edit-fruit" data-id="' + safeId + '">Edit</button><button class="btn-edit" data-act="toggle-visibility" data-id="' + safeId + '" data-avail="' + f.isAvailable + '" style="background:' + hideBg + ';color:' + hideColor + '">' + hideLabel + '</button><button class="btn-del" data-act="mark-oos" data-id="' + safeId + '" data-stock="' + f.stock + '">Mark OOS</button><button class="btn-del" data-act="remove-fruit" data-id="' + safeId + '" style="background:#fee2e2;color:#dc2626;border-color:#fca5a5" title="Permanently delete this fruit">Delete</button></div></td>' +
@@ -11376,6 +11383,28 @@ async function saveInlineStock(id) {
       (document.getElementById('adminFruitCat')?.value || ''),
       (document.getElementById('adminFruitSearch')?.value || ''));
   } else toast(r.message || 'Stock update failed.', 'error');
+}
+
+async function saveInlineDiscount(id) {
+  const inp = document.getElementById('di-' + id);
+  if (!inp) return;
+  const discountPercent = parseInt(inp.value, 10);
+  if (isNaN(discountPercent) || discountPercent < 0 || discountPercent > 90) {
+    toast('Discount must be between 0% and 90%.', 'error'); return;
+  }
+  const fruit = allFruits.find(f => f._id === id);
+  const fruitName = fruit ? fruit.name : 'this fruit';
+  const r = await PATCH('/fruits/' + id, { discountPercent });
+  if (r.ok) {
+    const label = discountPercent > 0 ? discountPercent + '% discount applied to ' + fruitName : 'Discount removed from ' + fruitName;
+    toast('✅ ' + label);
+    allFruits = allFruits.map(f => f._id === id ? { ...f, discountPercent } : f);
+    try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
+    patchLocalFruit(r.fruit); renderShopFruits(allFruits); renderHomeFruits();
+    _renderAdminFruitsFromData(allFruits,
+      (document.getElementById('adminFruitCat')?.value || ''),
+      (document.getElementById('adminFruitSearch')?.value || ''));
+  } else toast(r.message || 'Discount update failed.', 'error');
 }
 
 async function toggleFruitVisibility(id, isCurrentlyAvailable) {
@@ -11469,6 +11498,7 @@ document.addEventListener('click', function(e) {
   if (!id) return;
   if (act === 'save-price')         saveInlinePrice(id);
   else if (act === 'save-stock')         saveInlineStock(id);
+  else if (act === 'save-discount')      saveInlineDiscount(id);
   else if (act === 'edit-fruit')    openEditFruitModal(id);
   else if (act === 'toggle-visibility') toggleFruitVisibility(id, btn.dataset.avail === 'true');
   else if (act === 'mark-oos')      markFruitOOS(id, parseFloat(btn.dataset.stock || 0));
@@ -12129,7 +12159,7 @@ function loadJuicesAdminPanel() {
     '</div>';
   }
   panel.innerHTML = warn +
-    '<table class="admin-table"><thead><tr><th>Juice</th><th>Category</th><th>Price/500ml</th><th>MOO</th><th>Stock (L)</th><th>Status</th><th>Actions</th></tr></thead><tbody>' +
+    '<table class="admin-table"><thead><tr><th>Juice</th><th>Category</th><th>Price/500ml</th><th>Discount %</th><th>MOO</th><th>Stock (L)</th><th>Status</th><th>Actions</th></tr></thead><tbody>' +
     localJuices.map(function(j) {
       const isAvail = j.status === 'available';
       const stockL  = j.stock ?? 0;
@@ -12148,6 +12178,13 @@ function loadJuicesAdminPanel() {
               '<span style="background:var(--red);color:#fff;font-size:10px;font-weight:700;padding:1px 5px;border-radius:4px">-' + j.discountPercent + '%</span>'
             : '₹' + j.price) +
         '</td>' +
+        '<td><div style="display:flex;align-items:center;gap:4px">' +
+          '<span style="font-size:11px;color:var(--muted)">%</span>' +
+          '<input type="number" id="jdi-' + j.id + '" value="' + (j.discountPercent||0) + '" min="0" max="90" step="1"' +
+          ' style="width:52px;padding:5px 6px;border:1.5px solid var(--border);border-radius:6px;font-size:13px;font-weight:700;color:var(--orange);outline:none" placeholder="0">' +
+          '<button class="btn-edit" style="padding:5px 8px;font-size:11px;background:#FFF3CD;color:#856404;border-color:#FFC107" onclick="saveJuiceDiscount(\'' + j.id + '\')">Set</button>' +
+          (j.discountPercent > 0 ? '<span style="font-size:10px;font-weight:800;background:#DCFCE7;color:#15803D;padding:1px 5px;border-radius:10px;white-space:nowrap">-' + j.discountPercent + '% OFF</span>' : '') +
+        '</div></td>' +
         '<td>' + j.moo + 'ml</td>' +
         '<td><div style="display:flex;align-items:center;gap:6px">' +
           '<input type="number" id="jsi-' + j.id + '" value="' + stockL.toFixed(1) + '" min="0" step="0.5" style="width:64px;padding:5px;border:1.5px solid var(--border);border-radius:6px;font-size:13px;font-weight:700;color:' + sc + ';outline:none">' +
@@ -12183,6 +12220,23 @@ function saveJuiceStock(id) {
   loadJuicesAdminPanel();
   renderJuicesGrid();
   toast(j.name + ' stock updated to ' + stock + 'L');
+}
+
+function saveJuiceDiscount(id) {
+  const inp = document.getElementById('jdi-' + id);
+  if (!inp) return;
+  const discountPercent = parseInt(inp.value, 10);
+  if (isNaN(discountPercent) || discountPercent < 0 || discountPercent > 90) {
+    toast('Discount must be between 0% and 90%.', 'error'); return;
+  }
+  const j = localJuices.find(x => x.id === id);
+  if (!j) return;
+  j.discountPercent = discountPercent;
+  saveJuices();
+  loadJuicesAdminPanel();
+  renderJuicesGrid();
+  const label = discountPercent > 0 ? discountPercent + '% discount applied to ' + j.name : 'Discount removed from ' + j.name;
+  toast('✅ ' + label);
 }
 
 function toggleJuiceStatus(id) {
@@ -13101,6 +13155,7 @@ async function loadAdminUsers() {
       '<button class="btn-edit" onclick="viewCustomerHistory(\'' + u._id + '\',\'' + (u.phone||'') + '\')">History</button>' +
       (u.role !== 'admin'
         ? '<button class="btn-edit" onclick="toggleUser(\'' + u._id + '\',\'' + u.name + '\',' + u.isActive + ')" style="background:#FEF2F2;color:var(--red);border-color:#FECACA">' + (u.isActive ? 'Deactivate' : 'Activate') + '</button> ' +
+          '<button class="btn-edit" onclick="adminSetUserPassword(\'' + u._id + '\',\'' + u.name.replace(/'/g,"&#39;") + '\')" style="background:#EDE9FE;color:#5B21B6;border-color:#C4B5FD" title="Set a new password for this user">🔑 Set PW</button> ' +
           '<button class="btn-del" onclick="deleteUser(\'' + u._id + '\',\''+u.name.replace(/'/g,"&#39;")+'\')">🗑️</button>'
         : '<span style="font-size:11px;color:var(--muted)">Protected</span>') +
     '</td>' +
@@ -13127,6 +13182,80 @@ async function deleteUser(id, name) {
     },
     '🗑️'
   );
+}
+
+function adminSetUserPassword(id, name) {
+  // Build an inline modal for setting user password
+  const existing = document.getElementById('_adminPwModal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = '_adminPwModal';
+  modal.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML = `
+    <div style="background:#fff;border-radius:var(--r-xl);padding:28px 24px;max-width:380px;width:100%;box-shadow:var(--sh-xl)">
+      <div style="font-family:var(--font-head);font-size:20px;color:var(--g);margin-bottom:4px">🔑 Set Password</div>
+      <div style="font-size:13px;color:var(--muted);margin-bottom:18px">For user: <b style="color:var(--text)">${name}</b></div>
+      <div style="margin-bottom:12px">
+        <label style="font-size:12px;font-weight:700;color:var(--g);display:block;margin-bottom:4px">New Password</label>
+        <input id="_adminPwInput" type="password" placeholder="Min 8 characters"
+          style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:var(--r-md);font-size:15px;outline:none;font-family:var(--font-body)">
+      </div>
+      <div style="margin-bottom:20px">
+        <label style="font-size:12px;font-weight:700;color:var(--g);display:block;margin-bottom:4px">Confirm Password</label>
+        <input id="_adminPwConfirm" type="password" placeholder="Re-enter new password"
+          style="width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:var(--r-md);font-size:15px;outline:none;font-family:var(--font-body)">
+      </div>
+      <div id="_adminPwErr" style="color:var(--red);font-size:12px;font-weight:600;margin-bottom:10px;display:none"></div>
+      <div style="display:flex;gap:10px">
+        <button id="_adminPwCancel" style="flex:1;padding:11px;border:1.5px solid var(--border);background:#fff;border-radius:var(--r-md);font-size:14px;font-weight:600;cursor:pointer;font-family:var(--font-body);color:var(--muted)">Cancel</button>
+        <button id="_adminPwSave" style="flex:2;padding:11px;background:var(--g);color:#fff;border:none;border-radius:var(--r-md);font-size:14px;font-weight:700;cursor:pointer;font-family:var(--font-body)">Save Password</button>
+      </div>
+      <div style="margin-top:12px;font-size:11px;color:var(--muted);background:var(--gp);border-radius:var(--r-sm);padding:8px 10px">
+        ⚠️ This will log the user out of all devices. Use only when the user cannot reset their own password.
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const pwInput    = document.getElementById('_adminPwInput');
+  const pwConfirm  = document.getElementById('_adminPwConfirm');
+  const pwErr      = document.getElementById('_adminPwErr');
+  const cancelBtn  = document.getElementById('_adminPwCancel');
+  const saveBtn    = document.getElementById('_adminPwSave');
+
+  function showErr(msg) { pwErr.textContent = msg; pwErr.style.display = 'block'; }
+  function hideErr()    { pwErr.style.display = 'none'; }
+
+  cancelBtn.onclick = () => modal.remove();
+  modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+
+  saveBtn.onclick = async () => {
+    hideErr();
+    const pw  = pwInput.value;
+    const pw2 = pwConfirm.value;
+    if (pw.length < 8)    { showErr('Password must be at least 8 characters.'); return; }
+    if (pw !== pw2)        { showErr('Passwords do not match.'); return; }
+    saveBtn.textContent = 'Saving…'; saveBtn.disabled = true;
+    try {
+      const r = await http('POST', '/admin/users/' + id + '/reset-password', { newPassword: pw }, false);
+      if (r.ok) {
+        modal.remove();
+        toast('🔑 Password updated for ' + name + '. User logged out of all devices.');
+      } else {
+        saveBtn.textContent = 'Save Password'; saveBtn.disabled = false;
+        showErr(r.message || 'Failed to update password.');
+      }
+    } catch(e) {
+      saveBtn.textContent = 'Save Password'; saveBtn.disabled = false;
+      showErr('Network error. Please try again.');
+    }
+  };
+
+  // Allow Enter key to submit
+  [pwInput, pwConfirm].forEach(inp => inp.addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveBtn.click();
+  }));
+
+  setTimeout(() => pwInput.focus(), 100);
 }
 async function toggleUser(id, name, isActive) {
   showConfirmModal(

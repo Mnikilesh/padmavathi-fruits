@@ -1435,14 +1435,26 @@ async function route(method, path, event) {
     const initialPaymentStatus=(paymentMethod==='upi'||paymentMethod==='razorpay')?'paid':'pending';
 
     // ── IDEMPOTENCY CHECK 2: time-window fallback (catches token-less retries) ──
-    const recent = await Order.findOne({
+    // Only block if SAME total AND same item names — allows up to 5 genuinely different orders in the same timestamp.
+    const recentOrders = await Order.find({
       user: auth.user._id,
-      totalAmount,
       createdAt: { $gte: new Date(Date.now() - 10000) }
-    });
-    if (recent) {
-      console.log(`[PFC] RECENT_DUPLICATE_PREVENTED userId:${auth.user._id} amount:${totalAmount} ip:${clientIP}`);
-      return R.ok({ order: recent }, 'Recent duplicate order prevented.');
+    }).lean();
+    if (recentOrders.length > 0) {
+      const incomingItemKey = resolved.map(i => (i.name || '') + ':' + i.weightGrams).sort().join('|');
+      const trueDuplicate = recentOrders.find(ro => {
+        const existingKey = (ro.items || []).map(i => (i.name || '') + ':' + i.weightGrams).sort().join('|');
+        return Math.abs((ro.totalAmount || 0) - totalAmount) < 0.01 && existingKey === incomingItemKey;
+      });
+      if (trueDuplicate) {
+        console.log(`[PFC] RECENT_DUPLICATE_PREVENTED userId:${auth.user._id} amount:${totalAmount} ip:${clientIP}`);
+        return R.ok({ order: trueDuplicate }, 'Recent duplicate order prevented.');
+      }
+      // Allow up to 5 concurrent different orders — block if this would be the 6th
+      if (recentOrders.length >= 5) {
+        console.log(`[PFC] ORDER_RATE_LIMIT userId:${auth.user._id} recent:${recentOrders.length} ip:${clientIP}`);
+        return R.bad('Too many orders placed at once. Please wait a moment before placing another order.');
+      }
     }
 
     // Build orderNotes — append coupon info if applied
