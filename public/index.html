@@ -8449,8 +8449,10 @@ async function placeOrder() {
         quantity:       1,
         name:           c.name,
         isJuice:        false,
-        // clientSubtotal intentionally removed — server always recalculates from DB price
         fixedPrice:     c.fixedPrice || null,
+        // clientPrice: the effective price the user saw — server compares against DB price
+        // and returns 409 if they differ, so user is warned before order is saved.
+        clientPrice:    c.effPerKg !== undefined ? c.effPerKg : (c.pricePerKg || 0),
       })),
       ...juiceItems.map(c => ({
         isJuice:        true,
@@ -8461,7 +8463,10 @@ async function placeOrder() {
         weightGrams:    c.totalGrams || c.w || 500,
         weightLabel:    c.displayLabel || c.wl || (c.totalGrams || 500) + 'ml',
         quantity:       c.qty || 1,
-        // pricePerUnit omitted — server always reads from DB
+        // clientPrice: effective juice price the user saw
+        clientPrice:    c.discountPercent > 0
+                          ? parseFloat((c.pricePerKg * (1 - c.discountPercent / 100)).toFixed(2))
+                          : (c.pricePerKg || 0),
       })),
     ],
     customerName:    name,
@@ -8527,6 +8532,48 @@ async function placeOrder() {
 
   try {
     const r = await POST('/orders', payload);
+
+    // ── SERVER PRICE CHANGE DETECTION ──────────────────────────────
+    // Server returns 409 + priceChanged:true if any item's DB price differs
+    // from the clientPrice we sent. This is the definitive check — cannot be
+    // bypassed by CDN caching or background polling.
+    if (!r.ok && r.priceChanged) {
+      btn.textContent = 'Place Order'; btn.disabled = false;
+      // Update allFruits and cart with new prices from server response
+      if (Array.isArray(r.changes)) {
+        r.changes.forEach(ch => {
+          // Patch allFruits
+          const fi = allFruits.findIndex(f => f.name === ch.name);
+          if (fi >= 0) allFruits[fi] = { ...allFruits[fi], price: ch.newPrice };
+          // Patch cart items
+          cart.forEach(c => {
+            if (c.name === ch.name && !c.isJuice) {
+              c.effPerKg = ch.newPrice;
+              c.pricePerKg = ch.newPrice;
+              c.price = parseFloat((ch.newPrice * (c.totalGrams || 500) / 1000).toFixed(2));
+            }
+            if (c.name === ch.name && c.isJuice) {
+              c.pricePerKg = ch.newPrice;
+              c.discountPercent = 0;
+              c.price = parseFloat((ch.newPrice * (c.qty || 1)).toFixed(2));
+            }
+          });
+        });
+        saveCart();
+        // Refresh snapshot so next attempt uses the new confirmed prices
+        window._checkoutPriceSnapshot = {};
+        cart.forEach(c => {
+          if (!c.isJuice) window._checkoutPriceSnapshot[c.fid + ':' + (c.unitLabel||'')] = c.effPerKg !== undefined ? c.effPerKg : c.pricePerKg;
+          else {
+            const sj = c.discountPercent > 0 ? parseFloat((c.pricePerKg*(1-c.discountPercent/100)).toFixed(2)) : (c.pricePerKg||0);
+            window._checkoutPriceSnapshot[c.fid + ':juice'] = sj;
+          }
+        });
+      }
+      renderCart(); renderOrderSummary();
+      _showCartWarning(r.message || 'Prices have changed. Please review your cart and place your order again.');
+      return;
+    }
 
     if (r.ok && r.order) {
       // ── PRICE CONFIRMATION: compare server total vs displayed total ────────────────────

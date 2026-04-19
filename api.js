@@ -1401,12 +1401,21 @@ async function route(method, path, event) {
         if (juiceId && mongoose.Types.ObjectId.isValid(juiceId)) {
           juiceDoc = await JuiceM.findById(juiceId).lean();
         }
-        if (!juiceDoc) return R.bad(`"${item.name||'A juice'}" is no longer available. Please refresh and update your cart.`);
-        if (juiceDoc.isDeleted || juiceDoc.status === 'unavailable') return R.bad(`"${juiceDoc.name}" is currently unavailable. Please update your cart.`);
+        if (!juiceDoc) return R.json({ success:false, priceChanged:true, message:`"${item.name||'A juice'}" is no longer available. Please refresh and update your cart.`, changes:[] }, 409);
+        if (juiceDoc.isDeleted || juiceDoc.status === 'unavailable') return R.json({ success:false, priceChanged:true, message:`"${juiceDoc.name}" is currently unavailable. Please update your cart.`, changes:[] }, 409);
         // Use DB price — never trust client-supplied price
         const dbJuicePrice = juiceDoc.discountPercent > 0
           ? parseFloat((juiceDoc.price * (1 - juiceDoc.discountPercent / 100)).toFixed(2))
           : juiceDoc.price;
+        // Detect price change — client sends clientPrice so server can warn user
+        const clientJuicePrice = item.clientPrice !== undefined ? +item.clientPrice : null;
+        if (clientJuicePrice !== null && Math.abs(clientJuicePrice - dbJuicePrice) > 0.01) {
+          return R.json({
+            success: false, priceChanged: true,
+            message: `Price of ${juiceDoc.name} has changed from ₹${clientJuicePrice} to ₹${dbJuicePrice}. Please review your cart.`,
+            changes: [{ name: juiceDoc.name, oldPrice: clientJuicePrice, newPrice: dbJuicePrice, emoji: '🧃' }]
+          }, 409);
+        }
         const qty=Math.max(1,+item.quantity||1);
         const sub=parseFloat((dbJuicePrice*qty).toFixed(2));
         const wl=item.weightLabel||(item.weightGrams?item.weightGrams+'ml':'');
@@ -1424,6 +1433,18 @@ async function route(method, path, event) {
       // Always recalculate from DB price — never use clientSubtotal
       const sub=parseFloat((pp*(item.weightGrams/1000)*qty).toFixed(2));
       const wl=item.weightGrams>=1000?(item.weightGrams/1000)+'kg':item.weightGrams+'g';
+      // ── PRICE CHANGE DETECTION ───────────────────────────────────
+      // If client sent a price, compare it against DB price.
+      // Return a specific error so frontend can show warning BEFORE saving the order.
+      const clientPrice = item.clientPrice !== undefined ? +item.clientPrice : null;
+      if (clientPrice !== null && Math.abs(clientPrice - pp) > 0.01) {
+        return R.json({
+          success: false,
+          priceChanged: true,
+          message: `Price of ${f.name} has changed from ₹${clientPrice}/kg to ₹${pp}/kg. Please review your cart.`,
+          changes: [{ name: f.name, oldPrice: clientPrice, newPrice: pp, emoji: f.emoji }]
+        }, 409);
+      }
       resolved.push({fruit:f._id,name:f.name,emoji:f.emoji,variety:f.variety,pricePerKg:pp,weightGrams:+item.weightGrams,weightLabel:wl,quantity:qty,subtotal:sub});
       subtotal+=sub;
     }
