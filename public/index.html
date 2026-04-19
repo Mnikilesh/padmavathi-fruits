@@ -8337,8 +8337,8 @@ async function placeOrder() {
   // Validates fruits (price/stock) AND juices (removed/price changed) before sending.
   try {
     const [freshFr, freshJu] = await Promise.all([
-      fruitItems.length ? GET('/fruits?limit=100') : Promise.resolve({ ok: false }),
-      juiceItems.length ? GET('/juices') : Promise.resolve({ ok: false }),
+      fruitItems.length ? GET('/fruits?limit=100&_live=1&_t=' + Date.now()) : Promise.resolve({ ok: false }),
+      juiceItems.length ? GET('/juices?_live=1&_t=' + Date.now()) : Promise.resolve({ ok: false }),
     ]);
 
     // ── Fruit checks ──────────────────────────────────────────────

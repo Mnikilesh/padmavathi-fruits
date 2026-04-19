@@ -1031,12 +1031,13 @@ async function route(method, path, event) {
       Fruit.find(filter).sort(sort).skip((page-1)*limit).limit(limit).lean(),
       Fruit.countDocuments(filter)
     ]);
-    // Cache fruits list at CDN for 30s max so newly added fruits appear quickly.
+    // _live=1 = pre-checkout validation — must never be served from CDN cache.
+    const isLiveFruits = q._live === '1';
     return {
       ...R.ok({fruits,pagination:{page,limit,total,pages:Math.ceil(total/limit)}}),
       headers: {
         ...R.ok({}).headers,
-        'Cache-Control': 'public, max-age=10, s-maxage=30, stale-while-revalidate=10',
+        'Cache-Control': isLiveFruits ? 'no-store' : 'public, max-age=10, s-maxage=30, stale-while-revalidate=10',
         'Vary': 'Accept-Encoding',
       }
     };
@@ -1385,47 +1386,34 @@ async function route(method, path, event) {
     for (const item of items) {
       const looksLikeJuice=item.isJuice||!item.fruit||!mongoose.Types.ObjectId.isValid(item.fruit);
       if (looksLikeJuice) {
-        // ── SERVER-SIDE JUICE VALIDATION ──────────────────────────
-        // Look up the juice in DB by its ID to verify it still exists and is active.
-        // This prevents Cloudflare-cached pages from placing orders for deleted/unavailable juices.
+        // Always look up juice in DB — never trust client-supplied price or existence
         const juiceId = item.juiceId || item.fruit || '';
         let juiceDoc = null;
-        if (juiceId) {
-          // Try by _id first (ObjectId), then by the custom string id field
-          if (mongoose.Types.ObjectId.isValid(juiceId)) {
-            juiceDoc = await JuiceM.findById(juiceId).lean();
-          }
-          if (!juiceDoc) {
-            juiceDoc = await JuiceM.findOne({ id: juiceId }).lean();
-          }
+        if (juiceId && mongoose.Types.ObjectId.isValid(juiceId)) {
+          juiceDoc = await JuiceM.findById(juiceId).lean();
         }
-        if (!juiceDoc) {
-          return R.bad(`"${item.name || 'A juice'}" is no longer available. Please refresh and update your cart.`);
-        }
-        if (juiceDoc.status === 'unavailable' || juiceDoc.status === 'deleted') {
-          return R.bad(`"${juiceDoc.name}" is currently unavailable. Please update your cart.`);
-        }
+        if (!juiceDoc) return R.bad(`"${item.name||'A juice'}" is no longer available. Please refresh and update your cart.`);
+        if (juiceDoc.isDeleted || juiceDoc.status === 'unavailable') return R.bad(`"${juiceDoc.name}" is currently unavailable. Please update your cart.`);
         // Use DB price — never trust client-supplied price
-        const dbPrice = juiceDoc.discountPercent > 0
+        const dbJuicePrice = juiceDoc.discountPercent > 0
           ? parseFloat((juiceDoc.price * (1 - juiceDoc.discountPercent / 100)).toFixed(2))
           : juiceDoc.price;
         const qty=Math.max(1,+item.quantity||1);
-        const sub=parseFloat((dbPrice*qty).toFixed(2));
+        const sub=parseFloat((dbJuicePrice*qty).toFixed(2));
         const wl=item.weightLabel||(item.weightGrams?item.weightGrams+'ml':'');
-        resolved.push({isJuice:true,juiceId:juiceId,name:juiceDoc.name,emoji:juiceDoc.emoji||item.emoji||'🧃',pricePerKg:dbPrice,weightGrams:+(item.weightGrams||juiceDoc.moo||500),weightLabel:wl,quantity:qty,subtotal:sub});
+        resolved.push({isJuice:true,juiceId:juiceDoc._id.toString(),name:juiceDoc.name,emoji:item.emoji||'🧃',pricePerKg:dbJuicePrice,weightGrams:+(item.weightGrams||juiceDoc.moo||500),weightLabel:wl,quantity:qty,subtotal:sub});
         subtotal+=sub; continue;
       }
       const f=await Fruit.findById(item.fruit);
-      if (!f||!f.isAvailable||f.isDeleted) return R.bad('Fruit unavailable.');
+      if (!f||!f.isAvailable||f.isDeleted) return R.bad(`"${item.name||'A fruit'}" is no longer available. Please refresh and update your cart.`);
       if (f.stock<=0) return R.bad(`${f.name} is out of stock.`);
       if (!isValidWeight(item.weightGrams)) return R.bad(`Invalid weight: ${item.weightGrams}g.`);
       const qty=Math.max(1,+item.quantity||1);
       const reqKg=(+item.weightGrams/1000)*qty;
       if (reqKg>f.stock) return R.bad(`Only ${f.stock}kg of ${f.name} available.`);
       const pp=f.effectivePrice;
-      const sub=(item.clientSubtotal&&item.clientSubtotal>0)
-        ? parseFloat(item.clientSubtotal.toFixed(2))
-        : parseFloat((pp*(item.weightGrams/1000)*qty).toFixed(2));
+      // Always recalculate from DB price — never use clientSubtotal
+      const sub=parseFloat((pp*(item.weightGrams/1000)*qty).toFixed(2));
       const wl=item.weightGrams>=1000?(item.weightGrams/1000)+'kg':item.weightGrams+'g';
       resolved.push({fruit:f._id,name:f.name,emoji:f.emoji,variety:f.variety,pricePerKg:pp,weightGrams:+item.weightGrams,weightLabel:wl,quantity:qty,subtotal:sub});
       subtotal+=sub;
