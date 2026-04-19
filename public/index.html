@@ -3585,6 +3585,13 @@ body.on-admin   #floatingCartBar { display: none !important; }
       </div>
     </div>
 
+    <!-- Price/availability change warning banner — shown when catalog changes detected at checkout -->
+    <div id="cartWarningBanner" style="display:none;margin:0 0 14px;padding:14px 16px;background:#FEF3C7;border:1.5px solid #F59E0B;border-radius:12px;font-size:14px;font-weight:600;color:#92400E;line-height:1.5;position:relative;">
+      <span style="font-size:18px;margin-right:8px;">⚠️</span>
+      <span id="cartWarningMsg"></span>
+      <button onclick="document.getElementById('cartWarningBanner').style.display='none'" style="position:absolute;top:10px;right:12px;background:none;border:none;font-size:18px;cursor:pointer;color:#92400E;line-height:1;">×</button>
+    </div>
+
     <div class="co-header">
       <button class="co-back" onclick="showPage('shop')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
@@ -8130,6 +8137,20 @@ function checkPincodeDelivery(val) {
   }
 }
 
+// Show a persistent warning banner on the checkout page (survives page renders)
+function _showCartWarning(msg) {
+  const banner = document.getElementById('cartWarningBanner');
+  const msgEl  = document.getElementById('cartWarningMsg');
+  if (!banner || !msgEl) { toast('⚠️ ' + msg, 'error'); return; }
+  msgEl.textContent = msg;
+  banner.style.display = 'block';
+  banner.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+function _hideCartWarning() {
+  const banner = document.getElementById('cartWarningBanner');
+  if (banner) banner.style.display = 'none';
+}
+
 async function placeOrder() {
   // Guard: must be logged in to place order
   if (!currentUser || !AT.a) {
@@ -8143,6 +8164,7 @@ async function placeOrder() {
     toast('Your cart is empty. Please add items before placing an order.', 'error');
     return;
   }
+  _hideCartWarning(); // clear any previous warning from a prior attempt
   const name  = document.getElementById('co-name').value.trim();
   const phoneRaw = document.getElementById('co-phone').value.trim();
   const phone = validatePhone(phoneRaw);
@@ -8262,8 +8284,9 @@ async function placeOrder() {
         saveCoupons();
       }
     }
-    cart = []; saveCart(); updateCartCount(); 
+    cart = []; saveCart(); updateCartCount();
     appliedCoupon = null; localStorage.removeItem('pfc_coupon');
+    _hideCartWarning();
     const soEl = document.getElementById('successOrderId');
     const soSpan = soEl?.querySelector('span');
     if (soSpan) soSpan.textContent = 'Order ' + orderId;
@@ -8334,27 +8357,27 @@ async function placeOrder() {
       });
       if (priceChanged) {
         btn.textContent = 'Place Order'; btn.disabled = false;
-        toast('⚠️ Prices updated — please review your cart before confirming.', 'error');
-        syncCartWithCatalog(); renderCart(); showPage('cart');
+        _showCartWarning('Prices have been updated. Please review the new totals below before placing your order.');
+        syncCartWithCatalog(); renderCart(); renderOrderSummary();
         return;
       }
       for (const c of fruitItems) {
         const fresh = allFruits.find(f => f._id === (c.fruit || c.fid));
         if (!fresh || !fresh.isAvailable || fresh.isDeleted) {
           btn.textContent = 'Place Order'; btn.disabled = false;
-          toast('⚠️ ' + c.name + ' is no longer available. Please update your cart.', 'error');
-          syncCartWithCatalog(); renderCart(); showPage('cart'); return;
+          _showCartWarning(c.name + ' is no longer available and has been removed from your cart. Please review and place your order again.');
+          syncCartWithCatalog(); renderCart(); renderOrderSummary(); return;
         }
         const reqKg = (c.totalGrams || 500) / 1000;
         if (fresh.stock <= 0) {
           btn.textContent = 'Place Order'; btn.disabled = false;
-          toast(c.name + ' is now out of stock. Please update your cart.', 'error');
-          syncCartWithCatalog(); renderCart(); showPage('cart'); return;
+          _showCartWarning(c.name + ' is now out of stock and has been removed from your cart. Please review and place your order again.');
+          syncCartWithCatalog(); renderCart(); renderOrderSummary(); return;
         }
         if (reqKg > fresh.stock) {
           btn.textContent = 'Place Order'; btn.disabled = false;
-          toast('Only ' + fresh.stock + 'kg of ' + c.name + ' available. Adjust your cart.', 'error');
-          syncCartWithCatalog(); renderCart(); showPage('cart'); return;
+          _showCartWarning('Only ' + fresh.stock + 'kg of ' + c.name + ' is available — your quantity has been adjusted. Please review and place your order again.');
+          syncCartWithCatalog(); renderCart(); renderOrderSummary(); return;
         }
       }
     }
@@ -8365,21 +8388,19 @@ async function placeOrder() {
         const fresh = freshJu.juices.find(j => j.id === c.fid || j._id === c.fid);
         if (!fresh || fresh.status === 'unavailable' || fresh.status === 'deleted') {
           btn.textContent = 'Place Order'; btn.disabled = false;
-          toast('⚠️ "' + c.name + '" is no longer available. Please remove it from your cart.', 'error');
-          // Remove the unavailable juice from cart so user sees the updated cart
+          _showCartWarning('"' + c.name + '" is no longer available and has been removed from your cart. Please review and place your order again.');
           cart = cart.filter(ci => ci.fid !== c.fid);
-          saveCart(); renderCart(); showPage('cart'); return;
+          saveCart(); renderCart(); renderOrderSummary(); return;
         }
         const freshPrice = fresh.discountPercent > 0
           ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
           : fresh.price;
         if (Math.abs(freshPrice - (c.unitPrice || c.pricePerKg || 0)) > 0.01) {
           btn.textContent = 'Place Order'; btn.disabled = false;
-          toast('⚠️ Price of "' + c.name + '" has changed to ₹' + freshPrice + '. Please review your cart.', 'error');
-          // Update local juice list so cart re-renders with correct price
+          _showCartWarning('Price of "' + c.name + '" has changed to ₹' + freshPrice + '. Please review the updated total and place your order again.');
           const li = localJuices.findIndex(j => j.id === fresh.id || j.id === fresh._id);
           if (li > -1) { localJuices[li].price = fresh.price; localJuices[li].discountPercent = fresh.discountPercent || 0; saveJuices(); }
-          renderCart(); showPage('cart'); return;
+          renderCart(); renderOrderSummary(); return;
         }
       }
     }
