@@ -8173,6 +8173,17 @@ function _hideCartWarning() {
 
 async function placeOrder() {
   stopCheckoutPriceWatch(); // stop polling while order is being processed
+
+  // ── PRICE CHANGE ACKNOWLEDGMENT GUARD ─────────────────────────────────
+  // If an SSE price update arrived and the user hasn't acknowledged it yet,
+  // block the order and re-show the acknowledgment modal.
+  if (!_priceChangeAcknowledged) {
+    toast('⚠️ A price was updated — please review and tap "Reviewed — Continue" before placing your order.', 'error');
+    const overlay = document.getElementById('_priceAckOverlay');
+    if (overlay) overlay.style.display = 'flex';
+    return;
+  }
+
   if (!currentUser || !AT.a) {
     toast('Please login or create an account to place an order.', 'error');
     openAuth('login');
@@ -8307,6 +8318,7 @@ async function placeOrder() {
     cart = []; saveCart(); updateCartCount();
     appliedCoupon = null; localStorage.removeItem('pfc_coupon');
     window._checkoutPriceSnapshot = {};
+    _priceChangeAcknowledged = true; // reset — no pending price change after order clears
     _hideCartWarning();
     const soEl = document.getElementById('successOrderId');
     const soSpan = soEl?.querySelector('span');
@@ -8600,24 +8612,43 @@ async function placeOrder() {
     } else {
       // ⚠️ Server rejected — re-enable button so user can retry
       btn.textContent = 'Place Order'; btn.disabled = false;
-      // save locally so user keeps their order
-      const fallbackId = '#PFC-' + Math.floor(10000 + Math.random() * 90000);
-      const orderItems = cart.map(ci => ({
-        name: ci.name, emoji: ci.emoji || '🍎',
-        weightGrams: ci.totalGrams || ci.w || 500,
-        weightLabel: ci.displayLabel || ci.wl || ((ci.totalGrams||500)>=1000?(ci.totalGrams||500)/1000+'kg':(ci.totalGrams||500)+'g'),
-        subtotal: ci.price || 0, isJuice: !!ci.isJuice, juiceId: ci.fid || '', fruit: ci.fruit || ci.fid || null,
-      }));
-      saveLocalOrder(fallbackId, {
-        items: orderItems, totalAmount: _total, deliveryFee: _del, discount: _disc, platformFee: _pfee,
-        status: 'placed', paymentStatus: 'pending', paymentMethod: payMethod,
-        customerName: name, customerPhone: phone,
-        deliveryAddress: { street: addr, city, state: 'Telangana', pincode: pin },
-        orderNotes: notes, coupon: appliedCoupon ? appliedCoupon.code : null,
-      });
-      console.warn('Server error:', r.message || r.status, '— order saved locally as', fallbackId);
-      toast('Order saved! Server error: ' + (r.message || 'please check connection.'), 'error');
-      await resetCartAndSuccess(fallbackId);
+      // Only save a local fallback for genuine server/network errors (not price mismatches).
+      // Price mismatches are already handled above via the priceChanged path — saving a
+      // local order with stale prices would corrupt order history.
+      if (!r.priceChanged) {
+        const fallbackId = '#PFC-' + Math.floor(10000 + Math.random() * 90000);
+        // Use server-computed subtotals where available; fall back to cart prices.
+        // IMPORTANT: subtotal must use price_at_purchase (pricePerKg * weight), never
+        // the current catalog price, so order history stays accurate even if prices change.
+        const orderItems = cart.map(ci => {
+          const wg = ci.totalGrams || ci.w || 500;
+          const effPrice = ci.effPerKg !== undefined ? ci.effPerKg : (ci.pricePerKg || 0);
+          const computedSubtotal = ci.isJuice
+            ? parseFloat((effPrice * (ci.qty || 1)).toFixed(2))
+            : parseFloat((effPrice * wg / 1000).toFixed(2));
+          return {
+            name: ci.name, emoji: ci.emoji || '🍎',
+            weightGrams: wg,
+            weightLabel: ci.displayLabel || ci.wl || (wg >= 1000 ? wg/1000 + 'kg' : wg + 'g'),
+            // Use computedSubtotal (price at purchase) — never ci.price which may be stale
+            subtotal: computedSubtotal,
+            pricePerKg: effPrice,    // immutable snapshot of price the user saw
+            isJuice: !!ci.isJuice, juiceId: ci.fid || '', fruit: ci.fruit || ci.fid || null,
+          };
+        });
+        saveLocalOrder(fallbackId, {
+          items: orderItems, totalAmount: _total, deliveryFee: _del, discount: _disc, platformFee: _pfee,
+          status: 'placed', paymentStatus: 'pending', paymentMethod: payMethod,
+          customerName: name, customerPhone: phone,
+          deliveryAddress: { street: addr, city, state: 'Telangana', pincode: pin },
+          orderNotes: notes, coupon: appliedCoupon ? appliedCoupon.code : null,
+        });
+        console.warn('Server error:', r.message || r.status, '— order saved locally as', fallbackId);
+        toast('Order saved! Server error: ' + (r.message || 'please check connection.'), 'error');
+        await resetCartAndSuccess(fallbackId);
+      } else {
+        toast(r.message || 'Price changed — please review your cart.', 'error');
+      }
     }
   } catch (e) {
     btn.textContent = 'Place Order'; btn.disabled = false;
@@ -16291,6 +16322,68 @@ async function savePlatformFee() {
 
 let _sseSource = null;
 
+// ── PRICE-CHANGE ACKNOWLEDGMENT STATE ─────────────────────────────────────
+// When the SSE fires a price change for a cart item, we:
+//  1. Block the Place Order button immediately
+//  2. Show a modal requiring the user to explicitly acknowledge the new price
+//  3. Only re-enable Place Order after the user taps "I've Reviewed — Continue"
+// The server-side 409 guard is the last line of defence; this is the UX layer.
+let _priceChangeAcknowledged = true; // starts true — no pending price change
+
+function _blockPlaceOrderForPriceChange(productLabel, oldPriceStr, newPriceStr) {
+  _priceChangeAcknowledged = false;
+
+  // Disable both Place Order buttons (sticky + inline)
+  const btn = document.getElementById('placeBtn');
+  const stickyBtns = document.querySelectorAll('.co-sticky-btn');
+  if (btn) { btn.disabled = true; btn.style.opacity = '0.5'; }
+  stickyBtns.forEach(function(b) { b.disabled = true; b.style.opacity = '0.5'; });
+
+  // Build or reuse the blocking overlay
+  var overlay = document.getElementById('_priceAckOverlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = '_priceAckOverlay';
+    overlay.style.cssText = [
+      'position:fixed','inset:0','z-index:9999',
+      'background:rgba(0,0,0,0.60)',
+      'display:flex','align-items:center','justify-content:center',
+      'padding:20px',
+    ].join(';');
+    document.body.appendChild(overlay);
+  }
+  overlay.innerHTML =
+    '<div style="background:#fff;border-radius:16px;padding:28px 24px;max-width:360px;' +
+    'width:100%;box-shadow:0 20px 60px rgba(0,0,0,0.35)">' +
+      '<div style="font-size:32px;text-align:center;margin-bottom:6px">⚠️</div>' +
+      '<h3 style="margin:0 0 10px;font-size:18px;font-weight:800;color:#92400E;text-align:center">Price Updated</h3>' +
+      '<p style="margin:0 0 6px;font-size:14px;color:#374843;text-align:center">' +
+        '<b>' + productLabel + '</b> price changed:' +
+      '</p>' +
+      '<p style="margin:0 0 18px;font-size:22px;font-weight:800;color:#1B4332;text-align:center">' +
+        '₹' + oldPriceStr + ' &nbsp;→&nbsp; ₹' + newPriceStr +
+      '</p>' +
+      '<p style="margin:0 0 20px;font-size:13px;color:#6B7F72;text-align:center">' +
+        'Your cart total has been updated. Please review the new price before placing your order.' +
+      '</p>' +
+      '<button onclick="window._pfcAcknowledgePrice()" style="width:100%;background:#1B4332;' +
+      'color:#fff;border:none;border-radius:12px;padding:14px;font-size:16px;font-weight:800;' +
+      'cursor:pointer;letter-spacing:.01em">✓ Reviewed — Continue to Order</button>' +
+    '</div>';
+  overlay.style.display = 'flex';
+}
+
+window._pfcAcknowledgePrice = function() {
+  _priceChangeAcknowledged = true;
+  var overlay = document.getElementById('_priceAckOverlay');
+  if (overlay) overlay.style.display = 'none';
+  // Re-enable Place Order buttons
+  var btn = document.getElementById('placeBtn');
+  var stickyBtns = document.querySelectorAll('.co-sticky-btn');
+  if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  stickyBtns.forEach(function(b) { b.disabled = false; b.style.opacity = ''; });
+};
+
 function startCheckoutPriceWatch() {
   stopCheckoutPriceWatch();
   if (!cart || !cart.length) return;
@@ -16317,19 +16410,21 @@ function startCheckoutPriceWatch() {
 
     if (!affected.length) return; // price changed for something not in cart — ignore
 
-    // Sync and re-render
-    if (typeof syncCartWithCatalog === 'function') syncCartWithCatalog();
-    if (typeof renderCart === 'function') renderCart();
-    if (typeof renderOrderSummary === 'function') renderOrderSummary();
-
     const dbPrice = changed.discountPercent > 0
       ? parseFloat((changed.price * (1 - changed.discountPercent / 100)).toFixed(2))
       : changed.price;
     const oldPrice = affected[0].pricePerKg || affected[0].effPerKg || affected[0].price || 0;
-    _showPriceChangeBanner(
-      '⚠️ ' + (changed.emoji || '') + ' ' + changed.name +
-      ' price updated: ₹' + oldPrice.toFixed(0) + ' → ₹' + dbPrice.toFixed(0) +
-      '. Your cart total has been refreshed.'
+
+    // Sync cart with new prices and re-render
+    if (typeof syncCartWithCatalog === 'function') syncCartWithCatalog();
+    if (typeof renderCart === 'function') renderCart();
+    if (typeof renderOrderSummary === 'function') renderOrderSummary();
+
+    // CRITICAL: Block Place Order and require explicit acknowledgment
+    _blockPlaceOrderForPriceChange(
+      (changed.emoji || '') + ' ' + changed.name,
+      oldPrice.toFixed(0),
+      dbPrice.toFixed(0)
     );
   };
 
@@ -16342,6 +16437,15 @@ function startCheckoutPriceWatch() {
 
 function stopCheckoutPriceWatch() {
   if (_sseSource) { _sseSource.close(); _sseSource = null; }
+  // Reset acknowledgment state and close overlay when leaving checkout
+  _priceChangeAcknowledged = true;
+  var overlay = document.getElementById('_priceAckOverlay');
+  if (overlay) overlay.style.display = 'none';
+  // Re-enable buttons in case user navigates away mid-block and returns
+  var btn = document.getElementById('placeBtn');
+  var stickyBtns = document.querySelectorAll('.co-sticky-btn');
+  if (btn) { btn.disabled = false; btn.style.opacity = ''; }
+  stickyBtns.forEach(function(b) { b.disabled = false; b.style.opacity = ''; });
 }
 
 function _showPriceChangeBanner(msg) {

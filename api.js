@@ -1429,6 +1429,12 @@ async function route(method, path, event) {
         // Detect price change — client sends clientPrice so server can warn user
         const clientJuicePrice = item.clientPrice !== undefined ? +item.clientPrice : null;
         if (clientJuicePrice !== null && Math.abs(clientJuicePrice - dbJuicePrice) > 0.01) {
+          // MANDATORY LOGGING: old price vs new price + user who attempted the order
+          console.warn(
+            `[PFC] PRICE_MISMATCH_BLOCKED juice="${juiceDoc.name}" ` +
+            `oldPrice=₹${clientJuicePrice} newPrice=₹${dbJuicePrice} ` +
+            `userId=${auth.user._id} userEmail=${auth.user.email} ip=${clientIP}`
+          );
           return R.json({
             success: false, priceChanged: true,
             message: `Price of ${juiceDoc.name} has changed from ₹${clientJuicePrice} to ₹${dbJuicePrice}. Please review your cart.`,
@@ -1457,6 +1463,11 @@ async function route(method, path, event) {
       // Return a specific error so frontend can show warning BEFORE saving the order.
       const clientPrice = item.clientPrice !== undefined ? +item.clientPrice : null;
       if (clientPrice !== null && Math.abs(clientPrice - pp) > 0.01) {
+        // MANDATORY LOGGING: old price vs new price + user who attempted the order
+        console.warn(
+          `[PFC] PRICE_MISMATCH_BLOCKED fruit="${f.name}" oldPrice=₹${clientPrice}/kg newPrice=₹${pp}/kg` +
+          ` userId=${auth.user._id} userEmail=${auth.user.email} ip=${clientIP}`
+        );
         return R.json({
           success: false,
           priceChanged: true,
