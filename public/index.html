@@ -5768,6 +5768,21 @@ async function showPage(page) {
   if (page === 'profile')  loadProfilePage();
   if (page === 'admin')    switchAdminTab('overview');
   if (page === 'checkout') {
+    // Snapshot the effective price of every cart item RIGHT NOW, before any background
+    // sync can silently update them. placeOrder() compares against this snapshot so
+    // a price change that happened while the user was browsing is always caught.
+    window._checkoutPriceSnapshot = {};
+    cart.forEach(c => {
+      if (!c.isJuice) {
+        const snap = c.effPerKg !== undefined ? c.effPerKg : c.pricePerKg;
+        window._checkoutPriceSnapshot[c.fid + ':' + (c.unitLabel||'')] = snap;
+      } else {
+        const snapJ = c.discountPercent > 0
+          ? parseFloat((c.pricePerKg * (1 - c.discountPercent / 100)).toFixed(2))
+          : (c.pricePerKg || 0);
+        window._checkoutPriceSnapshot[c.fid + ':juice'] = snapJ;
+      }
+    });
     renderOrderSummary();
     // Restore location from cache — show address summary card if available,
     // otherwise show "Add Location" button. Never wipe a valid cached location.
@@ -7352,10 +7367,12 @@ function syncCartWithCatalog(silent) {
     const freshPrice = f.discountPercent > 0
       ? parseFloat((f.price * (1 - f.discountPercent / 100)).toFixed(2))
       : f.price;
-    if (c.unitPrice !== undefined && Math.abs(freshPrice - c.unitPrice) > 0.01) {
+    const cartEffPrice = c.effPerKg !== undefined ? c.effPerKg : (c.unitPrice !== undefined ? c.unitPrice : c.pricePerKg);
+    if (cartEffPrice !== undefined && Math.abs(freshPrice - cartEffPrice) > 0.01) {
       priceUpdated.push(c.name);
-      c.unitPrice = freshPrice;
-      c.pricePerKg = freshPrice;
+      c.effPerKg   = freshPrice;
+      c.unitPrice  = freshPrice;
+      c.pricePerKg = f.price; // keep raw base price
       // Recalculate displayed subtotal for this cart item
       c.price = parseFloat((freshPrice * (c.totalGrams || 500) / 1000).toFixed(2));
     }
@@ -8286,6 +8303,7 @@ async function placeOrder() {
     }
     cart = []; saveCart(); updateCartCount();
     appliedCoupon = null; localStorage.removeItem('pfc_coupon');
+    window._checkoutPriceSnapshot = {};
     _hideCartWarning();
     const soEl = document.getElementById('successOrderId');
     const soSpan = soEl?.querySelector('span');
@@ -8347,15 +8365,20 @@ async function placeOrder() {
       try { sessionStorage.setItem('pfc_fruits_cache', JSON.stringify({ ts: Date.now(), fruits: allFruits })); } catch(_) {}
       renderShopFruits(allFruits); renderHomeFruits();
 
+      const snap = window._checkoutPriceSnapshot || {};
       const priceChanged = fruitItems.some(c => {
         const fresh = allFruits.find(f => f._id === (c.fruit || c.fid));
         if (!fresh) return false;
         const freshPrice = fresh.discountPercent > 0
           ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
           : fresh.price;
-        // effPerKg = effective (discounted) price stored when item was added to cart
-        const cartPrice = c.effPerKg !== undefined ? c.effPerKg : (c.unitPrice !== undefined ? c.unitPrice : (c.pricePerKg || 0));
-        return Math.abs(freshPrice - cartPrice) > 0.01;
+        // Compare against the snapshot taken when user opened checkout —
+        // NOT against live cart fields that may have been silently updated by background polling.
+        const snapKey = c.fid + ':' + (c.unitLabel || '');
+        const snapPrice = snap[snapKey] !== undefined
+          ? snap[snapKey]
+          : (c.effPerKg !== undefined ? c.effPerKg : (c.pricePerKg || 0));
+        return Math.abs(freshPrice - snapPrice) > 0.01;
       });
       if (priceChanged) {
         btn.textContent = 'Place Order'; btn.disabled = false;
@@ -8397,7 +8420,10 @@ async function placeOrder() {
         const freshPrice = fresh.discountPercent > 0
           ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
           : fresh.price;
-        const cartJuicePrice = c.discountPercent > 0 ? parseFloat((c.pricePerKg * (1 - c.discountPercent / 100)).toFixed(2)) : (c.pricePerKg || 0);
+        const juiceSnapKey = c.fid + ':juice';
+        const cartJuicePrice = snap[juiceSnapKey] !== undefined
+          ? snap[juiceSnapKey]
+          : (c.discountPercent > 0 ? parseFloat((c.pricePerKg * (1 - c.discountPercent / 100)).toFixed(2)) : (c.pricePerKg || 0));
         if (Math.abs(freshPrice - cartJuicePrice) > 0.01) {
           btn.textContent = 'Place Order'; btn.disabled = false;
           _showCartWarning('Price of "' + c.name + '" has changed to ₹' + freshPrice + '. Please review the updated total and place your order again.');
