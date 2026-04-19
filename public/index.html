@@ -7740,7 +7740,7 @@ function calcDeliveryFee(cartItems, city) {
   const items    = cartItems || cart;
   const subtotal = items.reduce((s, c) => s + (c.price || 0), 0);
   const discount = typeof getCouponDiscount === 'function' ? getCouponDiscount(subtotal) : 0;
-  const FREE_THRESHOLD = 800;
+  const FREE_THRESHOLD = 500;
   if ((subtotal - discount) >= FREE_THRESHOLD) return 0;
   // Prefer pincode from checkout form (most accurate)
   const pin = (typeof document !== 'undefined' && document.getElementById('co-pin')?.value.trim()) || '';
@@ -7766,7 +7766,7 @@ function renderCartDrawer() {
   }
   const totalW = totalCartWeightGrams();
   const sub_ = getCartSubtotal();
-  const FREE_DEL_THRESHOLD = 800;
+  const FREE_DEL_THRESHOLD = 500;
   const remaining = Math.max(0, FREE_DEL_THRESHOLD - sub_);
   const pct = Math.min(100, (sub_ / FREE_DEL_THRESHOLD) * 100);
   const warnHtml = sub_ < FREE_DEL_THRESHOLD
@@ -8220,7 +8220,7 @@ function checkPincodeDelivery(val) {
     const fee = _pincodeFeesCache[pin] !== undefined ? _pincodeFeesCache[pin] : getDeliveryFeeByPincode(pin);
     const sub = getCartSubtotal();
     const disc = typeof getCouponDiscount === 'function' ? getCouponDiscount(sub) : 0;
-    const FREE_THRESHOLD = 800;
+    const FREE_THRESHOLD = 500;
     const isFree = (sub - disc) >= FREE_THRESHOLD;
     const feeText = isFree
       ? '🎉 Free delivery on your order!'
