@@ -366,7 +366,7 @@ const juiceSchema = new mongoose.Schema({
   discountPercent: { type:Number, default:0, min:0, max:90 },
   moo:             { type:Number, default:500 },   // minimum order ml
   category:        { type:String, default:'Fresh' },
-  status:          { type:String, enum:['available','soon'], default:'soon' },
+  status:          { type:String, enum:['available','soon'], default:'available' },
   stock:           { type:Number, default:0 },     // litres
   benefits:        [String],
   isDeleted:       { type:Boolean, default:false },
@@ -439,16 +439,22 @@ function rateLimit(ip, path) {
   if (path.startsWith('/api/auth/')) {
     return _rlCheck(ip + ':auth', 20, 60 * 1000);
   }
-  // Public product data — generous limit for legitimate browsing
+  // Product data + all admin ops (discount, price, stock, juices, baskets) —
+  // generous shared bucket so rapid admin edits never trigger 429.
+  // Admin write ops (PATCH/POST/DELETE for price, stock, discount) are included
+  // here so setting discounts, updating stock, or adding fruits/juices/baskets
+  // never collides with background polling calls.
   if (
-    path.startsWith('/api/juices') ||
+    path.startsWith('/api/juices')  ||
     path.startsWith('/api/baskets') ||
-    path.startsWith('/api/fruits')
+    path.startsWith('/api/fruits')  ||
+    path.startsWith('/api/admin/')  ||
+    path.startsWith('/api/settings')
   ) {
-    return _rlCheck(ip + ':public', 200, 15 * 60 * 1000);
+    return _rlCheck(ip + ':public', 400, 15 * 60 * 1000);
   }
-  // All other routes (orders, admin, driver, etc.)
-  return _rlCheck(ip + ':general', 100, 15 * 60 * 1000);
+  // All other routes (orders, driver, push, etc.)
+  return _rlCheck(ip + ':general', 150, 15 * 60 * 1000);
 }
 
 function getIP(event) {
@@ -727,12 +733,12 @@ const SEED_FRUITS = [
 ];
 
 const SEED_JUICES = [
-  { name:'Fresh Orange Juice',  desc:'Cold pressed · no added sugar',     price:60,  moo:500, stock:25, category:'Cold Pressed', status:'soon', benefits:['Rich in Vitamin C','Boosts immunity'] },
-  { name:'Lemon Mint Cooler',   desc:'Fresh squeezed with mint leaves',   price:40,  moo:500, stock:20, category:'Fresh',        status:'soon', benefits:['Refreshing & hydrating','Good for digestion'] },
-  { name:'Watermelon Juice',    desc:'Seasonal special · naturally sweet',price:50,  moo:500, stock:15, category:'Seasonal',     status:'soon', benefits:['Keeps you hydrated','Rich in lycopene'] },
-  { name:'Mango Lassi',         desc:'Alphonso mango blend · creamy',     price:80,  moo:500, stock:10, category:'Blend',        status:'soon', benefits:['Rich in Vitamin A','Probiotic benefits'] },
-  { name:'Grape Juice',         desc:'Seedless grapes · chilled',         price:70,  moo:500, stock:18, category:'Cold Pressed', status:'soon', benefits:['Antioxidant rich','Good for heart health'] },
-  { name:'Pineapple Ginger',    desc:'Fresh blend with ginger kick',      price:65,  moo:500, stock:12, category:'Blend',        status:'soon', benefits:['Anti-inflammatory','Aids digestion'] },
+  { name:'Fresh Orange Juice',  desc:'Cold pressed · no added sugar',     price:60,  moo:500, stock:25, category:'Cold Pressed', status:'available', benefits:['Rich in Vitamin C','Boosts immunity'] },
+  { name:'Lemon Mint Cooler',   desc:'Fresh squeezed with mint leaves',   price:40,  moo:500, stock:20, category:'Fresh',        status:'available', benefits:['Refreshing & hydrating','Good for digestion'] },
+  { name:'Watermelon Juice',    desc:'Seasonal special · naturally sweet',price:50,  moo:500, stock:15, category:'Seasonal',     status:'available', benefits:['Keeps you hydrated','Rich in lycopene'] },
+  { name:'Mango Lassi',         desc:'Alphonso mango blend · creamy',     price:80,  moo:500, stock:10, category:'Blend',        status:'available', benefits:['Rich in Vitamin A','Probiotic benefits'] },
+  { name:'Grape Juice',         desc:'Seedless grapes · chilled',         price:70,  moo:500, stock:18, category:'Cold Pressed', status:'available', benefits:['Antioxidant rich','Good for heart health'] },
+  { name:'Pineapple Ginger',    desc:'Fresh blend with ginger kick',      price:65,  moo:500, stock:12, category:'Blend',        status:'available', benefits:['Anti-inflammatory','Aids digestion'] },
 ];
 
 let _seeded = false;

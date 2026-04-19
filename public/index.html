@@ -5216,8 +5216,8 @@ body.on-admin   #floatingCartBar { display: none !important; }
         </div>
         <div class="form-row"><label>Status</label>
           <select id="jm-status" style="width:100%;padding:10px 14px;border:1.5px solid var(--border);border-radius:var(--r-sm);font-size:14px;font-family:var(--font-body);outline:none">
+            <option value="available" selected>Available</option>
             <option value="soon">Coming Soon</option>
-            <option value="available">Available</option>
           </select>
         </div>
       </div>
@@ -12201,27 +12201,29 @@ function loadJuicesAdminPanel() {
 }
 
 
-function saveJuiceStock(id) {
+async function saveJuiceStock(id) {
   const inp = document.getElementById('jsi-' + id);
   if (!inp) return;
   const stock = parseFloat(inp.value);
-  if (isNaN(stock) || stock < 0) { toast('Invalid or expired coupon.', 'error'); return; }
+  if (isNaN(stock) || stock < 0) { toast('Invalid stock value.', 'error'); return; }
   const j = localJuices.find(x => x.id === id);
   if (!j) return;
-  j.stock = stock;
-  // auto mark OOS if stock hits 0
-  if (stock <= 0 && j.status === 'available') {
-    // Auto-mark as coming soon instead of prompting — quicker UX for admin
-    j.status = 'soon';
-    toast(j.name + ' stock is 0 — marked as Coming Soon.');
-  }
-  saveJuices();
-  loadJuicesAdminPanel();
-  renderJuicesGrid();
-  toast(j.name + ' stock updated to ' + stock + 'L');
+  try {
+    const r = await fetch(API + '/juices/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ stock }),
+    });
+    const d = await r.json();
+    if (!r.ok) { toast('❌ ' + (d.message || 'Stock update failed.'), 'error'); return; }
+    j.stock = stock;
+    loadJuicesAdminPanel();
+    renderJuicesGrid();
+    toast('✅ ' + j.name + ' stock updated to ' + stock + 'L');
+  } catch(e) { toast('Network error: ' + e.message, 'error'); }
 }
 
-function saveJuiceDiscount(id) {
+async function saveJuiceDiscount(id) {
   const inp = document.getElementById('jdi-' + id);
   if (!inp) return;
   const discountPercent = parseInt(inp.value, 10);
@@ -12230,22 +12232,39 @@ function saveJuiceDiscount(id) {
   }
   const j = localJuices.find(x => x.id === id);
   if (!j) return;
-  j.discountPercent = discountPercent;
-  saveJuices();
-  loadJuicesAdminPanel();
-  renderJuicesGrid();
-  const label = discountPercent > 0 ? discountPercent + '% discount applied to ' + j.name : 'Discount removed from ' + j.name;
-  toast('✅ ' + label);
+  try {
+    const r = await fetch(API + '/juices/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ discountPercent }),
+    });
+    const d = await r.json();
+    if (!r.ok) { toast('❌ ' + (d.message || 'Discount update failed.'), 'error'); return; }
+    j.discountPercent = discountPercent;
+    loadJuicesAdminPanel();
+    renderJuicesGrid();
+    const label = discountPercent > 0 ? discountPercent + '% discount applied to ' + j.name : 'Discount removed from ' + j.name;
+    toast('✅ ' + label);
+  } catch(e) { toast('Network error: ' + e.message, 'error'); }
 }
 
-function toggleJuiceStatus(id) {
+async function toggleJuiceStatus(id) {
   const j = localJuices.find(x => x.id === id);
   if (!j) return;
-  j.status = j.status === 'available' ? 'soon' : 'available';
-  saveJuices();
-  loadJuicesAdminPanel();
-  renderJuicesGrid();
-  toast(j.name + ' marked as ' + (j.status === 'available' ? 'Available' : 'Coming Soon'));
+  const newStatus = j.status === 'available' ? 'soon' : 'available';
+  try {
+    const r = await fetch(API + '/juices/' + id, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AT.a },
+      body: JSON.stringify({ status: newStatus }),
+    });
+    const d = await r.json();
+    if (!r.ok) { toast('❌ ' + (d.message || 'Status update failed.'), 'error'); return; }
+    j.status = newStatus;
+    loadJuicesAdminPanel();
+    renderJuicesGrid();
+    toast(j.name + ' marked as ' + (newStatus === 'available' ? 'Available ✅' : 'Coming Soon'));
+  } catch(e) { toast('Network error: ' + e.message, 'error'); }
 }
 
 function openAddJuiceModal() {
@@ -12260,7 +12279,7 @@ function openAddJuiceModal() {
   document.getElementById('jm-moo').value      = '500';
   document.getElementById('jm-stock').value    = '20';
   document.getElementById('jm-cat').value      = 'Fresh';
-  document.getElementById('jm-status').value   = 'soon';
+  document.getElementById('jm-status').value   = 'available';
   document.getElementById('jm-benefits').value = '';
   document.getElementById('juiceErr').textContent = '';
   // jm-imgPreview removed - using slot system instead
