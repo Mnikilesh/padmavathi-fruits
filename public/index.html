@@ -8353,7 +8353,9 @@ async function placeOrder() {
         const freshPrice = fresh.discountPercent > 0
           ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
           : fresh.price;
-        return Math.abs(freshPrice - (c.unitPrice || c.pricePerKg || 0)) > 0.01;
+        // effPerKg = effective (discounted) price stored when item was added to cart
+        const cartPrice = c.effPerKg !== undefined ? c.effPerKg : (c.unitPrice !== undefined ? c.unitPrice : (c.pricePerKg || 0));
+        return Math.abs(freshPrice - cartPrice) > 0.01;
       });
       if (priceChanged) {
         btn.textContent = 'Place Order'; btn.disabled = false;
@@ -8395,7 +8397,8 @@ async function placeOrder() {
         const freshPrice = fresh.discountPercent > 0
           ? parseFloat((fresh.price * (1 - fresh.discountPercent / 100)).toFixed(2))
           : fresh.price;
-        if (Math.abs(freshPrice - (c.unitPrice || c.pricePerKg || 0)) > 0.01) {
+        const cartJuicePrice = c.discountPercent > 0 ? parseFloat((c.pricePerKg * (1 - c.discountPercent / 100)).toFixed(2)) : (c.pricePerKg || 0);
+        if (Math.abs(freshPrice - cartJuicePrice) > 0.01) {
           btn.textContent = 'Place Order'; btn.disabled = false;
           _showCartWarning('Price of "' + c.name + '" has changed to ₹' + freshPrice + '. Please review the updated total and place your order again.');
           const li = localJuices.findIndex(j => j.id === fresh.id || j.id === fresh._id);
@@ -8404,7 +8407,12 @@ async function placeOrder() {
         }
       }
     }
-  } catch(_) { /* network blip — server will validate on receipt */ }
+  } catch(refreshErr) {
+    btn.textContent = 'Place Order'; btn.disabled = false;
+    _showCartWarning('Could not verify latest prices — please check your connection and try placing the order again.');
+    console.warn('[PFC] Pre-checkout refresh failed:', refreshErr);
+    return;
+  }
 
   // ── Send to server (all items — fruits AND juices — go through server validation) ──
   const payload = {
