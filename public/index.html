@@ -3456,17 +3456,7 @@ body.on-admin   #floatingCartBar { display: none !important; }
     <div id="juicesGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:18px"></div>
   </div>
 
-  <!-- PUBLIC REVIEWS STRIP ON SHOP PAGE -->
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px 60px">
-    <div style="text-align:center;margin-bottom:20px">
-      <div style="font-family:var(--font-head);font-size:22px;color:var(--g);margin-bottom:4px">&#9733; Customer Reviews</div>
-      <div style="font-size:13px;color:var(--muted)">Real reviews from Warangal families</div>
-    </div>
-    <div id="publicReviewsList" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px"></div>
-    <div id="publicReviewsEmpty" style="display:none;text-align:center;padding:24px;background:var(--gp);border-radius:var(--r-xl)">
-      <div style="font-size:13px;color:var(--muted)">Be the first to review! Order fruits and rate your experience. &#11088;</div>
-    </div>
-  </div>
+
 </div>
 
 <!-- ABOUT -->
@@ -5095,13 +5085,7 @@ body.on-admin   #floatingCartBar { display: none !important; }
           <span class="fp-extras-arrow">›</span>
         </summary>
         <div class="fp-benefits-list" id="fpBenefitsList"></div>
-        <div class="fp-reviews" id="fpReviewsSection">
-          <div class="fp-reviews-title">
-            ⭐ Customer Reviews
-            <span class="fp-reviews-count" id="fpReviewsCount"></span>
-          </div>
-          <div id="fpReviewsList"></div>
-        </div>
+
       </details>
       <div id="fpRelatedWrap" style="display:none"></div>
     </div>
@@ -5771,7 +5755,7 @@ async function showPage(page) {
   if (el) { el.classList.add('active'); }
   else { document.getElementById('page-home').classList.add('active'); return; }
   if (page === 'bundles') setTimeout(renderBundlesPage, 50);
-  if (page === 'shop') setTimeout(renderPublicReviews, 100);
+
   window.scrollTo({ top: 0, behavior: 'smooth' });
   if (typeof lucide !== 'undefined') lucide.createIcons();
   if (page === 'shop')     loadShopFruits();
@@ -6326,57 +6310,7 @@ function filterFruits() {
   renderShopFruits(applySortToFruits(data, sort));
 }
 
-function renderPublicReviews() {
-  const list = document.getElementById('publicReviewsList');
-  const empty = document.getElementById('publicReviewsEmpty');
-  if (!list) return;
 
-  // Gather all stored reviews (fruit reviews from server cache + juice reviews)
-  const allReviews = [];
-
-  // Juice reviews from localStorage
-  try {
-    const jrMap = JSON.parse(localStorage.getItem('pfc_juice_reviews') || '{}');
-    Object.entries(jrMap).forEach(([jid, revs]) => {
-      const jj = (typeof localJuices !== 'undefined' ? localJuices : []).find(x => x.id === jid);
-      (revs || []).forEach(r => {
-        if (r.rating >= 1) allReviews.push({ name: jj ? jj.name : 'Juice', emoji: jj?.emoji || '🧃', rating: r.rating, comment: r.comment, date: r.date });
-      });
-    });
-  } catch(e){}
-
-  // Fruit reviews from localStorage cache (set by submitAllRatings)
-  try {
-    const frMap = JSON.parse(localStorage.getItem('pfc_public_reviews') || '[]');
-    frMap.forEach(r => { if (r.rating >= 1) allReviews.push(r); });
-  } catch(e){}
-
-  if (!allReviews.length) {
-    list.innerHTML = '';
-    if (empty) empty.style.display = 'block';
-    return;
-  }
-  if (empty) empty.style.display = 'none';
-
-  // Sort newest first, show max 12
-  allReviews.sort((a,b) => new Date(b.date) - new Date(a.date));
-  const recent = allReviews.slice(0, 12);
-  const stars = n => '★'.repeat(n) + '☆'.repeat(5 - n);
-
-  list.innerHTML = recent.map(r => `
-    <div style="background:var(--white);border-radius:var(--r-lg);border:1px solid var(--border2);padding:16px;box-shadow:var(--sh-sm)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <span style="font-size:22px">${r.emoji || '🍎'}</span>
-        <div>
-          <div style="font-weight:700;font-size:13px;color:var(--text)">${r.name}</div>
-          <div style="font-size:12px;color:var(--muted)">${new Date(r.date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})}</div>
-        </div>
-        <div style="margin-left:auto;color:#F59E0B;font-size:14px;letter-spacing:1px">${stars(r.rating)}</div>
-      </div>
-      ${r.comment ? `<p style="font-size:12px;color:var(--text2);font-style:italic;line-height:1.6;margin:0">"${r.comment}"</p>` : ''}
-    </div>
-  `).join('');
-}
 
 function renderShopFruits(data) {
   const grid = document.getElementById('shopGrid');
@@ -6983,7 +6917,7 @@ function openFruitPopup(fid) {
   ).join('');
 
   // ── REVIEWS ──
-  loadFruitReviews(f._id);
+
 
   // ── YOU MIGHT ALSO LIKE ──
   _renderRelatedFruits(f);

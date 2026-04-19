@@ -1203,13 +1203,16 @@ async function route(method, path, event) {
     const id=path.split('/')[3];
     const page=Math.max(1,+q.page||1),limit=Math.min(20,+q.limit||10);
     const [reviews,total]=await Promise.all([
-      Review.find({fruit:id,isApproved:true}).populate('user','name').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),
+      Review.find({fruit:id,isApproved:true}).populate('user','name role').sort({createdAt:-1}).skip((page-1)*limit).limit(limit).lean(),
       Review.countDocuments({fruit:id,isApproved:true})
     ]);
+    // Filter out admin test reviews before returning
+    const filteredRevs = reviews.filter(rv => !rv.user || rv.user.role !== 'admin');
+    const filteredTotal = total - (reviews.length - filteredRevs.length);
     // Cache reviews at CDN for 5 min — they change only when a new review is submitted.
     // Browser also caches for 60s so rapid popup open/close is free.
     return {
-      ...R.ok({reviews,total,page,pages:Math.ceil(total/limit)}),
+      ...R.ok({reviews:filteredRevs,total:filteredTotal,page,pages:Math.ceil(filteredTotal/limit)}),
       headers: {
         ...R.ok({}).headers,
         'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=60',
@@ -1251,12 +1254,13 @@ async function route(method, path, event) {
     const { Review: ReviewM, Fruit: FruitM } = getModels();
     const limit = Math.min(20, parseInt(q.limit)||12);
     const reviews = await ReviewM.find({ isApproved: true, rating: { $gte: 4 } })
-      .populate('user', 'name')
+      .populate('user', 'name role')
       .populate('fruit', 'name emoji')
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
-    return R.ok({ reviews });
+    const publicReviews = reviews.filter(rv => !rv.user || rv.user.role !== 'admin');
+    return R.ok({ reviews: publicReviews });
   }
 
   if (method==='PATCH' && /^\/api\/fruits\/[^/]+$/.test(path)) {
