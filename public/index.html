@@ -2033,6 +2033,16 @@ footer p { font-size: var(--text-sm); margin-bottom: 4px; opacity: .75; }
   padding: 6px 0 max(6px, env(safe-area-inset-bottom));
   box-shadow: 0 -2px 20px rgba(27,67,50,.08);
 }
+/* Show bottom bar on mobile via CSS — never depends on JS running */
+@media (max-width: 768px) {
+  .bottom-tab-bar { display: block; }
+  body { padding-bottom: calc(68px + max(6px, env(safe-area-inset-bottom))); }
+}
+/* Also show when installed as PWA (standalone mode) */
+@media (display-mode: standalone) {
+  .bottom-tab-bar { display: block; }
+  body { padding-bottom: calc(68px + max(6px, env(safe-area-inset-bottom))); }
+}
 .btab-inner {
   display: flex;
   align-items: stretch;
@@ -15829,18 +15839,30 @@ function shareCurrentFruit() {
 function initBottomTabBar() {
   const bar = document.getElementById('bottomTabBar');
   if (!bar) return;
-  // Show on mobile or when installed as PWA
-  const isMobile   = window.matchMedia('(max-width: 768px)').matches;
-  const isPWA      = window.matchMedia('(display-mode: standalone)').matches
-                  || window.navigator.standalone === true;
+  // Bottom bar visibility is now handled purely by CSS media queries
+  // (max-width:768px and display-mode:standalone) so it never vanishes on refresh.
+  // We still apply has-bottom-bar class for toast/WA button offsets.
+  const isMobile = window.matchMedia('(max-width: 768px)').matches;
+  const isPWA    = window.matchMedia('(display-mode: standalone)').matches
+                || window.navigator.standalone === true;
   if (isMobile || isPWA) {
-    bar.style.display = 'block';
     document.body.classList.add('has-bottom-bar');
     // Hide the old mobile-cart-fab (bottom tab has cart now)
     const fab = document.querySelector('.mobile-cart-fab');
     if (fab) fab.style.display = 'none';
   }
 }
+// Re-apply has-bottom-bar on resize so toast/WA offsets stay correct
+window.addEventListener('resize', function() {
+  const isMobile = window.matchMedia('(max-width: 768px)').matches;
+  const isPWA    = window.matchMedia('(display-mode: standalone)').matches
+                || window.navigator.standalone === true;
+  if (isMobile || isPWA) {
+    document.body.classList.add('has-bottom-bar');
+  } else {
+    document.body.classList.remove('has-bottom-bar');
+  }
+});
 
 async function btabNav(page) {
   await showPage(page);
